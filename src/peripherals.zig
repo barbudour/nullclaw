@@ -1333,8 +1333,8 @@ test "gpioRead returns result with state" {
     rpi.connected = true;
     const p = rpi.peripheral();
     if (comptime builtin.os.tag == .linux) {
-        // Skip if /sys/class/gpio is not available (CI, containers, non-RPi)
-        std.fs.accessAbsolute("/sys/class/gpio", .{}) catch return error.SkipZigTest;
+        // Only run on real RPi hardware — requires NULLCLAW_GPIO_TEST=1
+        if (std.posix.getenv("NULLCLAW_GPIO_TEST") == null) return error.SkipZigTest;
         const result = try gpioRead(p, 17);
         try std.testing.expectEqual(@as(u32, 17), result.pin);
         try std.testing.expectEqualStrings("LOW", result.stateString());
@@ -1348,8 +1348,8 @@ test "gpioWrite returns success" {
     rpi.connected = true;
     const p = rpi.peripheral();
     if (comptime builtin.os.tag == .linux) {
-        // Skip if /sys/class/gpio is not available (CI, containers, non-RPi)
-        std.fs.accessAbsolute("/sys/class/gpio", .{}) catch return error.SkipZigTest;
+        // Only run on real RPi hardware — requires NULLCLAW_GPIO_TEST=1
+        if (std.posix.getenv("NULLCLAW_GPIO_TEST") == null) return error.SkipZigTest;
         const result = try gpioWrite(p, 17, true);
         try std.testing.expectEqual(@as(u32, 17), result.pin);
         try std.testing.expectEqual(@as(u8, 1), result.value);
