@@ -15,19 +15,19 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
 </p>
 
-The smallest fully autonomous AI assistant infrastructure — a complete Zig rewrite of [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), 5x smaller binary, same feature set.
+The smallest fully autonomous AI assistant infrastructure — a static Zig binary that fits on any $5 board, boots in milliseconds, and requires nothing but libc.
 
 ```
-678 KB binary · <2 ms startup · 1,653 tests · 22+ providers · 11 channels · Pluggable everything
+678 KB binary · <2 ms startup · 2,656 tests · 22+ providers · 11 channels · Pluggable everything
 ```
 
 ### Features
 
-- **Impossibly Small:** 678 KB static binary — 5x smaller than ZeroClaw, 44x smaller than OpenClaw.
-- **Near-Zero Memory:** ~1 MB peak RSS — 5,000x less than OpenClaw, 5x less than ZeroClaw.
+- **Impossibly Small:** 678 KB static binary — no runtime, no VM, no framework overhead.
+- **Near-Zero Memory:** ~1 MB peak RSS. Runs comfortably on the cheapest ARM SBCs and microcontrollers.
 - **Instant Startup:** <2 ms on Apple Silicon, <8 ms on a 0.8 GHz edge core.
-- **True Portability:** Single self-contained binary across ARM, x86, and RISC-V. No runtime, no VM, no dependencies.
-- **Feature-Complete:** All 22+ providers, 11 channels, 18 tools, hybrid memory, sandbox, tunnels, peripherals — everything ZeroClaw has.
+- **True Portability:** Single self-contained binary across ARM, x86, and RISC-V. Drop it anywhere, it just runs.
+- **Feature-Complete:** 22+ providers, 11 channels, 18+ tools, hybrid vector+FTS5 memory, multi-layer sandbox, tunnels, hardware peripherals, MCP, subagents, streaming, voice — the full stack.
 
 ### Why nullclaw
 
@@ -285,16 +285,16 @@ Config: `~/.nullclaw/config.json` (created by `onboard`)
 ```bash
 zig build                          # Dev build
 zig build -Doptimize=ReleaseSmall  # Release build (678 KB)
-zig build test --summary all       # 1,653 tests
+zig build test --summary all       # 2,656 tests
 ```
 
 ### Project Stats
 
 ```
 Language:     Zig 0.15
-Source files: 96
-Lines of code: 36,197
-Tests:        1,653
+Source files: ~110
+Lines of code: ~45,000
+Tests:        2,656
 Binary:       678 KB (ReleaseSmall)
 Peak RSS:     ~1 MB
 Startup:      <2 ms (Apple Silicon)
