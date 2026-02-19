@@ -595,7 +595,7 @@ pub const TelegramChannel = struct {
     /// Poll for updates using long-polling (getUpdates) via curl.
     /// Returns a slice of ChannelMessages allocated on the given allocator.
     /// Voice and audio messages are automatically transcribed via Groq Whisper
-    /// when GROQ_API_KEY is set.
+    /// when a Groq API key is configured (config or GROQ_API_KEY env var).
     pub fn pollUpdates(self: *TelegramChannel, allocator: std.mem.Allocator) ![]root.ChannelMessage {
         var url_buf: [512]u8 = undefined;
         const url = try self.apiUrl(&url_buf, "getUpdates");
@@ -1087,6 +1087,12 @@ test "telegram init stores fields" {
     try std.testing.expectEqualStrings("123:ABC-DEF", ch.bot_token);
     try std.testing.expectEqual(@as(i64, 0), ch.last_update_id);
     try std.testing.expectEqual(@as(usize, 2), ch.allowed_users.len);
+    try std.testing.expect(ch.groq_api_key == null);
+}
+
+test "telegram init stores groq_api_key" {
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &.{}, "gsk_test123");
+    try std.testing.expectEqualStrings("gsk_test123", ch.groq_api_key.?);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

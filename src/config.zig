@@ -177,11 +177,6 @@ pub const Config = struct {
             self.api_key = key;
         } else |_| {}
 
-        // Groq API Key (for voice transcription)
-        if (std.process.getEnvVarOwned(self.allocator, "GROQ_API_KEY")) |key| {
-            self.groq_api_key = key;
-        } else |_| {}
-
         // Provider
         if (std.process.getEnvVarOwned(self.allocator, "NULLCLAW_PROVIDER")) |prov| {
             self.default_provider = prov;
@@ -254,6 +249,9 @@ pub const Config = struct {
         // Top-level fields
         if (self.api_key) |key| {
             try w.print("  \"api_key\": \"{s}\",\n", .{key});
+        }
+        if (self.groq_api_key) |key| {
+            try w.print("  \"groq_api_key\": \"{s}\",\n", .{key});
         }
         try w.print("  \"default_provider\": \"{s}\",\n", .{self.default_provider});
         if (self.default_model) |model| {
@@ -1041,4 +1039,24 @@ test "json parse mcp_servers with env" {
     }
     allocator.free(s.env);
     allocator.free(cfg.mcp_servers);
+}
+
+test "json parse groq_api_key" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"groq_api_key": "gsk_test_abc123"}
+    ;
+    var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
+    try cfg.parseJson(json);
+    try std.testing.expectEqualStrings("gsk_test_abc123", cfg.groq_api_key.?);
+    allocator.free(cfg.groq_api_key.?);
+}
+
+test "groq_api_key defaults to null" {
+    const cfg = Config{
+        .workspace_dir = "/tmp/yc",
+        .config_path = "/tmp/yc/config.json",
+        .allocator = std.testing.allocator,
+    };
+    try std.testing.expect(cfg.groq_api_key == null);
 }

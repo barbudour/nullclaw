@@ -173,7 +173,7 @@ pub fn runTelegramLoop(
     // Heap-alloc TelegramChannel for vtable pointer stability
     const tg_ptr = allocator.create(telegram.TelegramChannel) catch return;
     defer allocator.destroy(tg_ptr);
-    tg_ptr.* = telegram.TelegramChannel.init(allocator, telegram_config.bot_token, telegram_config.allowed_users);
+    tg_ptr.* = telegram.TelegramChannel.init(allocator, telegram_config.bot_token, telegram_config.allowed_users, config.groq_api_key);
     tg_ptr.proxy = telegram_config.proxy;
 
     // Register bot commands and skip stale messages
