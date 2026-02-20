@@ -3,7 +3,7 @@
 # ── Stage 1: Build ────────────────────────────────────────────
 FROM alpine:3.21 AS builder
 
-RUN apk add --no-cache zig sqlite-dev musl-dev
+RUN apk add --no-cache zig musl-dev
 
 WORKDIR /app
 COPY build.zig build.zig.zon src/ src/
