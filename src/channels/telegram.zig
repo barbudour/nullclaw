@@ -1,6 +1,7 @@
 const std = @import("std");
 const root = @import("root.zig");
 const voice = @import("../voice.zig");
+const platform = @import("../platform.zig");
 
 const log = std.log.scoped(.telegram);
 
@@ -451,10 +452,17 @@ pub const TelegramChannel = struct {
         var url_buf: [512]u8 = undefined;
         const url = try self.apiUrl(&url_buf, kind.apiMethod());
 
-        // Build file form field: field=@path
+        // Build file form field: field=@path (local files) or field=URL (remote URLs)
         var file_arg_buf: [1024]u8 = undefined;
         var file_fbs = std.io.fixedBufferStream(&file_arg_buf);
-        try file_fbs.writer().print("{s}=@{s}", .{ kind.formField(), file_path });
+        if (std.mem.startsWith(u8, file_path, "http://") or
+            std.mem.startsWith(u8, file_path, "https://") or
+            std.mem.startsWith(u8, file_path, "data:"))
+        {
+            try file_fbs.writer().print("{s}={s}", .{ kind.formField(), file_path });
+        } else {
+            try file_fbs.writer().print("{s}=@{s}", .{ kind.formField(), file_path });
+        }
         const file_arg = file_fbs.getWritten();
 
         // Build chat_id form field
@@ -706,10 +714,49 @@ pub const TelegramChannel = struct {
                     }
                     break :blk_content null;
                 }
+
+                // Check for photo messages — download and wrap as [IMAGE:] marker
+                if (message.object.get("photo")) |photo_val| {
+                    if (photo_val == .array and photo_val.array.items.len > 0) {
+                        // Pick last element (highest resolution)
+                        const last_photo = photo_val.array.items[photo_val.array.items.len - 1];
+                        if (last_photo == .object) {
+                            const fid_val = last_photo.object.get("file_id") orelse break :blk_content null;
+                            const fid = if (fid_val == .string) fid_val.string else break :blk_content null;
+                            if (downloadTelegramPhoto(allocator, self.bot_token, fid)) |local_path| {
+                                var result: std.ArrayListUnmanaged(u8) = .empty;
+                                result.appendSlice(allocator, "[IMAGE:") catch {
+                                    allocator.free(local_path);
+                                    break :blk_content null;
+                                };
+                                result.appendSlice(allocator, local_path) catch {
+                                    allocator.free(local_path);
+                                    result.deinit(allocator);
+                                    break :blk_content null;
+                                };
+                                result.appendSlice(allocator, "]") catch {
+                                    allocator.free(local_path);
+                                    result.deinit(allocator);
+                                    break :blk_content null;
+                                };
+                                allocator.free(local_path);
+                                // Append caption if present
+                                if (message.object.get("caption")) |cap_val| {
+                                    if (cap_val == .string) {
+                                        result.appendSlice(allocator, " ") catch {};
+                                        result.appendSlice(allocator, cap_val.string) catch {};
+                                    }
+                                }
+                                break :blk_content result.toOwnedSlice(allocator) catch null;
+                            }
+                        }
+                    }
+                }
+
                 break :blk_content null;
             };
 
-            // Fall back to text content if no voice transcription
+            // Fall back to text content if no voice/photo content
             const final_content = content orelse blk_text: {
                 const text_val = message.object.get("text") orelse continue;
                 const text_str = if (text_val == .string) text_val.string else continue;
@@ -1019,6 +1066,68 @@ pub const TypingIndicator = struct {
         }
     }
 };
+
+// ════════════════════════════════════════════════════════════════════════════
+// Telegram Photo Download
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Download a photo from Telegram by file_id. Returns the local temp file path (caller-owned).
+/// Calls getFile API, then downloads the binary, saves to temp dir.
+fn downloadTelegramPhoto(allocator: std.mem.Allocator, bot_token: []const u8, file_id: []const u8) ?[]u8 {
+    // 1. Call getFile to get file_path
+    var url_buf: [512]u8 = undefined;
+    var url_fbs = std.io.fixedBufferStream(&url_buf);
+    url_fbs.writer().print("https://api.telegram.org/bot{s}/getFile", .{bot_token}) catch return null;
+    const api_url = url_fbs.getWritten();
+
+    var body_list: std.ArrayListUnmanaged(u8) = .empty;
+    defer body_list.deinit(allocator);
+    body_list.appendSlice(allocator, "{\"file_id\":\"") catch return null;
+    body_list.appendSlice(allocator, file_id) catch return null;
+    body_list.appendSlice(allocator, "\"}") catch return null;
+
+    const resp = root.http_util.curlPost(allocator, api_url, body_list.items, &.{}) catch return null;
+    defer allocator.free(resp);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, resp, .{}) catch return null;
+    defer parsed.deinit();
+
+    const result_obj = parsed.value.object.get("result") orelse return null;
+    const fp_val = result_obj.object.get("file_path") orelse return null;
+    const tg_file_path = if (fp_val == .string) fp_val.string else return null;
+
+    // 2. Download the file
+    var dl_url_buf: [1024]u8 = undefined;
+    var dl_fbs = std.io.fixedBufferStream(&dl_url_buf);
+    dl_fbs.writer().print("https://api.telegram.org/file/bot{s}/{s}", .{ bot_token, tg_file_path }) catch return null;
+    const dl_url = dl_fbs.getWritten();
+
+    const data = root.http_util.curlGet(allocator, dl_url, &.{}, "30") catch return null;
+    defer allocator.free(data);
+
+    // 3. Determine file extension from the Telegram file_path
+    const ext = if (std.mem.lastIndexOfScalar(u8, tg_file_path, '.')) |dot|
+        tg_file_path[dot..]
+    else
+        ".jpg";
+
+    // 4. Save to temp file
+    const tmp_dir = platform.getTempDir(allocator) catch return null;
+    defer allocator.free(tmp_dir);
+    var path_buf: [512]u8 = undefined;
+    var path_fbs = std.io.fixedBufferStream(&path_buf);
+    // Use file_id hash for unique name
+    const hash = std.hash.Fnv1a_32.hash(file_id);
+    path_fbs.writer().print("{s}/nullclaw_photo_{x}{s}", .{ tmp_dir, hash, ext }) catch return null;
+    const local_path = path_fbs.getWritten();
+
+    // Write file
+    const file = std.fs.createFileAbsolute(local_path, .{}) catch return null;
+    defer file.close();
+    file.writeAll(data) catch return null;
+
+    return allocator.dupe(u8, local_path) catch null;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Tests
@@ -1527,4 +1636,30 @@ test "telegram TypingIndicator stop without start is safe" {
     var ch = TelegramChannel.init(std.testing.allocator, "tok", &.{});
     var ti = TypingIndicator.init(&ch);
     ti.stop(); // no-op
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Multipart URL Detection Tests
+// ════════════════════════════════════════════════════════════════════════════
+
+test "telegram sendMediaMultipart URL detection for http" {
+    // Verify URL detection logic (same logic used in sendMediaMultipart)
+    const url = "https://example.com/photo.jpg";
+    try std.testing.expect(std.mem.startsWith(u8, url, "http://") or
+        std.mem.startsWith(u8, url, "https://") or
+        std.mem.startsWith(u8, url, "data:"));
+}
+
+test "telegram sendMediaMultipart URL detection for local file" {
+    const path = "/tmp/photo.png";
+    try std.testing.expect(!(std.mem.startsWith(u8, path, "http://") or
+        std.mem.startsWith(u8, path, "https://") or
+        std.mem.startsWith(u8, path, "data:")));
+}
+
+test "telegram sendMediaMultipart URL detection for data URI" {
+    const data_uri = "data:image/png;base64,iVBOR";
+    try std.testing.expect(std.mem.startsWith(u8, data_uri, "http://") or
+        std.mem.startsWith(u8, data_uri, "https://") or
+        std.mem.startsWith(u8, data_uri, "data:"));
 }

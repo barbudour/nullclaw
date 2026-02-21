@@ -526,41 +526,8 @@ pub const OpenAiCompatibleProvider = struct {
     fn deinitImpl(_: *anyopaque) void {}
 };
 
-/// Serialize a single message's content field (plain string or multimodal content parts array).
-/// OpenAI format: text → {"type":"text","text":"..."}, image_url → {"type":"image_url","image_url":{"url":"...","detail":"..."}}.
-fn serializeMessageContent(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, msg: ChatMessage) !void {
-    if (msg.content_parts) |parts| {
-        try buf.append(allocator, '[');
-        for (parts, 0..) |part, j| {
-            if (j > 0) try buf.append(allocator, ',');
-            switch (part) {
-                .text => |text| {
-                    try buf.appendSlice(allocator, "{\"type\":\"text\",\"text\":");
-                    try root.appendJsonString(buf, allocator, text);
-                    try buf.append(allocator, '}');
-                },
-                .image_url => |img| {
-                    try buf.appendSlice(allocator, "{\"type\":\"image_url\",\"image_url\":{\"url\":");
-                    try root.appendJsonString(buf, allocator, img.url);
-                    try buf.appendSlice(allocator, ",\"detail\":\"");
-                    try buf.appendSlice(allocator, img.detail.toSlice());
-                    try buf.appendSlice(allocator, "\"}}");
-                },
-                .image_base64 => |img| {
-                    // OpenAI accepts base64 images as data URIs in image_url
-                    try buf.appendSlice(allocator, "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
-                    try buf.appendSlice(allocator, img.media_type);
-                    try buf.appendSlice(allocator, ";base64,");
-                    try buf.appendSlice(allocator, img.data);
-                    try buf.appendSlice(allocator, "\"}}");
-                },
-            }
-        }
-        try buf.append(allocator, ']');
-    } else {
-        try root.appendJsonString(buf, allocator, msg.content);
-    }
-}
+/// Serialize a single message's content field — delegates to shared helper in providers/helpers.zig.
+const serializeMessageContent = root.serializeMessageContent;
 
 /// Build a full chat request JSON body from a ChatRequest (OpenAI-compatible format).
 fn buildChatRequestBody(

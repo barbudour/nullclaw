@@ -189,6 +189,44 @@ pub fn appendGenerationFields(
     }
 }
 
+/// Serialize a single message's content field (plain string or multimodal content parts array).
+/// OpenAI format: text → {"type":"text","text":"..."}, image_url → {"type":"image_url","image_url":{"url":"...","detail":"..."}},
+/// image_base64 → {"type":"image_url","image_url":{"url":"data:mime;base64,..."}}.
+/// Used by OpenAI, OpenRouter, and Compatible providers.
+pub fn serializeMessageContent(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, msg: root.ChatMessage) !void {
+    if (msg.content_parts) |parts| {
+        try buf.append(allocator, '[');
+        for (parts, 0..) |part, j| {
+            if (j > 0) try buf.append(allocator, ',');
+            switch (part) {
+                .text => |text| {
+                    try buf.appendSlice(allocator, "{\"type\":\"text\",\"text\":");
+                    try json_util.appendJsonString(buf, allocator, text);
+                    try buf.append(allocator, '}');
+                },
+                .image_url => |img| {
+                    try buf.appendSlice(allocator, "{\"type\":\"image_url\",\"image_url\":{\"url\":");
+                    try json_util.appendJsonString(buf, allocator, img.url);
+                    try buf.appendSlice(allocator, ",\"detail\":\"");
+                    try buf.appendSlice(allocator, img.detail.toSlice());
+                    try buf.appendSlice(allocator, "\"}}");
+                },
+                .image_base64 => |img| {
+                    // OpenAI accepts base64 images as data URIs in image_url
+                    try buf.appendSlice(allocator, "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
+                    try buf.appendSlice(allocator, img.media_type);
+                    try buf.appendSlice(allocator, ";base64,");
+                    try buf.appendSlice(allocator, img.data);
+                    try buf.appendSlice(allocator, "\"}}");
+                },
+            }
+        }
+        try buf.append(allocator, ']');
+    } else {
+        try json_util.appendJsonString(buf, allocator, msg.content);
+    }
+}
+
 /// Serialize tool definitions into an OpenAI-format JSON array, appending directly into `buf`.
 /// Format: [{"type":"function","function":{"name":"...","description":"...","parameters":{...}}}]
 pub fn convertToolsOpenAI(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, tools: []const ToolSpec) !void {
@@ -428,4 +466,76 @@ test "buildRequestBodyWithSystem escapes special chars in both fields" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\\n") != null);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     parsed.deinit();
+}
+
+test "serializeMessageContent plain text" {
+    const alloc = std.testing.allocator;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(alloc);
+    const msg = root.ChatMessage.user("Hello world");
+    try serializeMessageContent(&buf, alloc, msg);
+    try std.testing.expectEqualStrings("\"Hello world\"", buf.items);
+}
+
+test "serializeMessageContent with content_parts text" {
+    const alloc = std.testing.allocator;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(alloc);
+    const parts = &[_]root.ContentPart{
+        .{ .text = "Describe this" },
+    };
+    const msg = root.ChatMessage{
+        .role = .user,
+        .content = "Describe this",
+        .content_parts = parts,
+    };
+    try serializeMessageContent(&buf, alloc, msg);
+    // Should produce an array with a text part
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, buf.items, .{});
+    defer parsed.deinit();
+    const arr = parsed.value.array;
+    try std.testing.expectEqual(@as(usize, 1), arr.items.len);
+    try std.testing.expectEqualStrings("text", arr.items[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings("Describe this", arr.items[0].object.get("text").?.string);
+}
+
+test "serializeMessageContent with image_base64 part" {
+    const alloc = std.testing.allocator;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(alloc);
+    const parts = &[_]root.ContentPart{
+        .{ .text = "What is this?" },
+        .{ .image_base64 = .{ .data = "iVBOR", .media_type = "image/png" } },
+    };
+    const msg = root.ChatMessage{
+        .role = .user,
+        .content = "What is this?",
+        .content_parts = parts,
+    };
+    try serializeMessageContent(&buf, alloc, msg);
+    // Verify it produces valid JSON with data URI
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "data:image/png;base64,iVBOR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"type\":\"image_url\"") != null);
+}
+
+test "serializeMessageContent with image_url part" {
+    const alloc = std.testing.allocator;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(alloc);
+    const parts = &[_]root.ContentPart{
+        .{ .image_url = .{ .url = "https://example.com/cat.jpg" } },
+    };
+    const msg = root.ChatMessage{
+        .role = .user,
+        .content = "",
+        .content_parts = parts,
+    };
+    try serializeMessageContent(&buf, alloc, msg);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, buf.items, .{});
+    defer parsed.deinit();
+    const arr = parsed.value.array;
+    try std.testing.expectEqual(@as(usize, 1), arr.items.len);
+    const img_obj = arr.items[0].object.get("image_url").?.object;
+    try std.testing.expectEqualStrings("https://example.com/cat.jpg", img_obj.get("url").?.string);
+    try std.testing.expectEqualStrings("auto", img_obj.get("detail").?.string);
 }

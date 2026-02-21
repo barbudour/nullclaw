@@ -268,7 +268,7 @@ pub const OpenAiProvider = struct {
             try buf.appendSlice(allocator, "{\"role\":\"");
             try buf.appendSlice(allocator, msg.role.toSlice());
             try buf.appendSlice(allocator, "\",\"content\":");
-            try root.appendJsonString(&buf, allocator, msg.content);
+            try root.serializeMessageContent(&buf, allocator, msg);
             if (msg.tool_call_id) |tc_id| {
                 try buf.appendSlice(allocator, ",\"tool_call_id\":");
                 try root.appendJsonString(&buf, allocator, tc_id);
@@ -310,7 +310,7 @@ pub const OpenAiProvider = struct {
             try buf.appendSlice(allocator, "{\"role\":\"");
             try buf.appendSlice(allocator, msg.role.toSlice());
             try buf.appendSlice(allocator, "\",\"content\":");
-            try root.appendJsonString(&buf, allocator, msg.content);
+            try root.serializeMessageContent(&buf, allocator, msg);
             if (msg.tool_call_id) |tc_id| {
                 try buf.appendSlice(allocator, ",\"tool_call_id\":");
                 try root.appendJsonString(&buf, allocator, tc_id);

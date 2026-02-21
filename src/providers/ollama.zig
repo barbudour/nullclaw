@@ -320,7 +320,28 @@ fn buildChatRequestBody(
         const escaped = try jsonEscapeString(allocator, msg.content);
         defer allocator.free(escaped);
         try buf.appendSlice(allocator, escaped);
-        try buf.appendSlice(allocator, "\"}");
+        try buf.append(allocator, '"');
+        // Append images array if content_parts contains base64 images
+        if (msg.content_parts) |parts| {
+            var has_images = false;
+            for (parts) |part| {
+                switch (part) {
+                    .image_base64 => |img| {
+                        if (!has_images) {
+                            try buf.appendSlice(allocator, ",\"images\":[\"");
+                            has_images = true;
+                        } else {
+                            try buf.appendSlice(allocator, ",\"");
+                        }
+                        try buf.appendSlice(allocator, img.data);
+                        try buf.append(allocator, '"');
+                    },
+                    else => {},
+                }
+            }
+            if (has_images) try buf.append(allocator, ']');
+        }
+        try buf.append(allocator, '}');
     }
 
     try buf.appendSlice(allocator, "],\"stream\":false,\"options\":{\"temperature\":");
@@ -408,6 +429,44 @@ test "extractToolNameAndArgs with tool. prefix" {
 test "extractToolNameAndArgs with tools. prefix" {
     const result = extractToolNameAndArgs(std.testing.allocator, "tools.file_read", .null);
     try std.testing.expectEqualStrings("file_read", result.name);
+}
+
+test "ollama buildChatRequestBody with images" {
+    const alloc = std.testing.allocator;
+    const cp = &[_]root.ContentPart{
+        .{ .text = "Describe this image" },
+        .{ .image_base64 = .{ .data = "iVBOR", .media_type = "image/png" } },
+    };
+    var msgs = [_]root.ChatMessage{
+        .{ .role = .user, .content = "Describe this image", .content_parts = cp },
+    };
+    const body = try buildChatRequestBody(alloc, .{ .messages = &msgs, .model = "llava" }, "llava", 0.7);
+    defer alloc.free(body);
+    // Verify valid JSON and images array present
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
+    defer parsed.deinit();
+    const messages_arr = parsed.value.object.get("messages").?.array;
+    try std.testing.expectEqual(@as(usize, 1), messages_arr.items.len);
+    const msg_obj = messages_arr.items[0].object;
+    try std.testing.expectEqualStrings("Describe this image", msg_obj.get("content").?.string);
+    const images = msg_obj.get("images").?.array;
+    try std.testing.expectEqual(@as(usize, 1), images.items.len);
+    try std.testing.expectEqualStrings("iVBOR", images.items[0].string);
+}
+
+test "ollama buildChatRequestBody without content_parts" {
+    const alloc = std.testing.allocator;
+    var msgs = [_]root.ChatMessage{
+        root.ChatMessage.user("Hello"),
+    };
+    const body = try buildChatRequestBody(alloc, .{ .messages = &msgs, .model = "llama3" }, "llama3", 0.7);
+    defer alloc.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
+    defer parsed.deinit();
+    const messages_arr = parsed.value.object.get("messages").?.array;
+    const msg_obj = messages_arr.items[0].object;
+    // No images field when no content_parts
+    try std.testing.expect(msg_obj.get("images") == null);
 }
 
 test "extractToolNameAndArgs with nested tool_call wrapper" {

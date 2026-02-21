@@ -16,6 +16,7 @@ const tools_mod = @import("../tools/root.zig");
 const Tool = tools_mod.Tool;
 const memory_mod = @import("../memory/root.zig");
 const Memory = memory_mod.Memory;
+const multimodal = @import("../multimodal.zig");
 const observability = @import("../observability.zig");
 const Observer = observability.Observer;
 const ObserverEvent = observability.ObserverEvent;
@@ -315,7 +316,8 @@ pub const Agent = struct {
                 for (self.history.items, 0..) |*msg, i| {
                     m[i] = msg.toChatMessage();
                 }
-                break :blk m;
+                // Process [IMAGE:] markers into content_parts for multimodal support
+                break :blk try multimodal.prepareMessagesForProvider(arena, m);
             };
 
             const timer_start = std.time.milliTimestamp();

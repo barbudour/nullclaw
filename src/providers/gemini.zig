@@ -433,9 +433,37 @@ fn buildChatRequestBody(
         };
         try buf.appendSlice(allocator, "{\"role\":\"");
         try buf.appendSlice(allocator, role_str);
-        try buf.appendSlice(allocator, "\",\"parts\":[{\"text\":");
-        try root.appendJsonString(&buf, allocator, msg.content);
-        try buf.appendSlice(allocator, "}]}");
+        try buf.appendSlice(allocator, "\",\"parts\":[");
+        if (msg.content_parts) |parts| {
+            for (parts, 0..) |part, j| {
+                if (j > 0) try buf.append(allocator, ',');
+                switch (part) {
+                    .text => |text| {
+                        try buf.appendSlice(allocator, "{\"text\":");
+                        try root.appendJsonString(&buf, allocator, text);
+                        try buf.append(allocator, '}');
+                    },
+                    .image_base64 => |img| {
+                        try buf.appendSlice(allocator, "{\"inlineData\":{\"mimeType\":\"");
+                        try buf.appendSlice(allocator, img.media_type);
+                        try buf.appendSlice(allocator, "\",\"data\":\"");
+                        try buf.appendSlice(allocator, img.data);
+                        try buf.appendSlice(allocator, "\"}}");
+                    },
+                    .image_url => |img| {
+                        // Gemini doesn't support direct URLs; include as text reference
+                        try buf.appendSlice(allocator, "{\"text\":\"[Image: ");
+                        try buf.appendSlice(allocator, img.url);
+                        try buf.appendSlice(allocator, "]\"}");
+                    },
+                }
+            }
+        } else {
+            try buf.appendSlice(allocator, "{\"text\":");
+            try root.appendJsonString(&buf, allocator, msg.content);
+            try buf.append(allocator, '}');
+        }
+        try buf.appendSlice(allocator, "]}");
     }
     try buf.append(allocator, ']');
 
@@ -747,4 +775,45 @@ test "parseCredentialsJson empty access_token returns null" {
 test "parseCredentialsJson invalid JSON returns null" {
     const result = parseCredentialsJson(std.testing.allocator, "not json at all");
     try std.testing.expect(result == null);
+}
+
+test "gemini buildChatRequestBody plain text" {
+    const alloc = std.testing.allocator;
+    var msgs = [_]root.ChatMessage{
+        root.ChatMessage.user("Hello"),
+    };
+    const body = try buildChatRequestBody(alloc, .{ .messages = &msgs }, 0.7);
+    defer alloc.free(body);
+    // Verify valid JSON
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
+    defer parsed.deinit();
+    const contents = parsed.value.object.get("contents").?.array;
+    try std.testing.expectEqual(@as(usize, 1), contents.items.len);
+    const parts = contents.items[0].object.get("parts").?.array;
+    try std.testing.expectEqual(@as(usize, 1), parts.items.len);
+    try std.testing.expectEqualStrings("Hello", parts.items[0].object.get("text").?.string);
+}
+
+test "gemini buildChatRequestBody with content_parts inlineData" {
+    const alloc = std.testing.allocator;
+    const cp = &[_]root.ContentPart{
+        .{ .text = "What is this?" },
+        .{ .image_base64 = .{ .data = "iVBOR", .media_type = "image/png" } },
+    };
+    var msgs = [_]root.ChatMessage{
+        .{ .role = .user, .content = "What is this?", .content_parts = cp },
+    };
+    const body = try buildChatRequestBody(alloc, .{ .messages = &msgs }, 0.7);
+    defer alloc.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
+    defer parsed.deinit();
+    const contents = parsed.value.object.get("contents").?.array;
+    const parts = contents.items[0].object.get("parts").?.array;
+    try std.testing.expectEqual(@as(usize, 2), parts.items.len);
+    // First part: text
+    try std.testing.expectEqualStrings("What is this?", parts.items[0].object.get("text").?.string);
+    // Second part: inlineData
+    const inline_data = parts.items[1].object.get("inlineData").?.object;
+    try std.testing.expectEqualStrings("image/png", inline_data.get("mimeType").?.string);
+    try std.testing.expectEqualStrings("iVBOR", inline_data.get("data").?.string);
 }
