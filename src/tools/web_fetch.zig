@@ -12,6 +12,10 @@ const net_security = @import("../root.zig").net_security;
 
 /// Default max chars for extracted content.
 const DEFAULT_MAX_CHARS: usize = 50_000;
+const WEB_FETCH_HEADERS = [_]std.http.Header{
+    .{ .name = "User-Agent", .value = "nullclaw/0.1 (web_fetch tool)" },
+    .{ .name = "Accept", .value = "text/html,application/json,text/plain,*/*" },
+};
 
 /// Web fetch tool — fetches URLs and extracts readable content.
 pub const WebFetchTool = struct {
@@ -56,12 +60,7 @@ pub const WebFetchTool = struct {
         const uri = std.Uri.parse(url) catch
             return ToolResult.fail("Invalid URL format");
 
-        var req = client.request(.GET, uri, .{
-            .extra_headers = &.{
-                .{ .name = "User-Agent", .value = "nullclaw/0.1 (web_fetch tool)" },
-                .{ .name = "Accept", .value = "text/html,application/json,text/plain,*/*" },
-            },
-        }) catch |err| {
+        var req = client.request(.GET, uri, buildRequestOptions()) catch |err| {
             const msg = try std.fmt.allocPrint(allocator, "Fetch failed: {}", .{err});
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         };
@@ -79,7 +78,7 @@ pub const WebFetchTool = struct {
         };
 
         const status_code = @intFromEnum(response.head.status);
-        if (status_code < 200 or status_code >= 400) {
+        if (!isSuccessStatus(status_code)) {
             const msg = try std.fmt.allocPrint(allocator, "HTTP {d}", .{status_code});
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         }
@@ -120,6 +119,17 @@ fn parseMaxCharsWithDefault(args: JsonObjectMap, default: usize) usize {
     if (val_i64 < 100) return 100;
     if (val_i64 > 200_000) return 200_000;
     return @intCast(val_i64);
+}
+
+fn buildRequestOptions() std.http.Client.RequestOptions {
+    return .{
+        .extra_headers = &WEB_FETCH_HEADERS,
+        .redirect_behavior = .unhandled,
+    };
+}
+
+fn isSuccessStatus(status_code: u16) bool {
+    return status_code >= 200 and status_code < 300;
 }
 
 /// Convert HTML to readable text with basic markdown formatting.
@@ -446,6 +456,19 @@ test "WebFetchTool private IP blocked" {
     defer p3.deinit();
     const r3 = try wft.execute(testing.allocator, p3.value.object);
     try testing.expect(!r3.success);
+}
+
+test "web_fetch disables automatic redirects" {
+    const opts = buildRequestOptions();
+    try testing.expect(opts.redirect_behavior == .unhandled);
+}
+
+test "web_fetch treats only 2xx as success" {
+    try testing.expect(isSuccessStatus(200));
+    try testing.expect(isSuccessStatus(299));
+    try testing.expect(!isSuccessStatus(300));
+    try testing.expect(!isSuccessStatus(302));
+    try testing.expect(!isSuccessStatus(404));
 }
 
 test "htmlToText strips script and style" {

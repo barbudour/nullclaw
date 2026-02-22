@@ -112,9 +112,7 @@ pub const HttpRequestTool = struct {
             extra_count += 1;
         }
 
-        var req = client.request(method, uri, .{
-            .extra_headers = extra_headers_buf[0..extra_count],
-        }) catch |err| {
+        var req = client.request(method, uri, buildRequestOptions(extra_headers_buf[0..extra_count])) catch |err| {
             const msg = try std.fmt.allocPrint(allocator, "HTTP request failed: {}", .{err});
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         };
@@ -189,6 +187,14 @@ fn validateMethod(method: []const u8) ?std.http.Method {
     if (std.ascii.eqlIgnoreCase(method, "HEAD")) return .HEAD;
     if (std.ascii.eqlIgnoreCase(method, "OPTIONS")) return .OPTIONS;
     return null;
+}
+
+/// Disable auto-follow redirects so every hop can be explicitly validated.
+fn buildRequestOptions(extra_headers: []const std.http.Header) std.http.Client.RequestOptions {
+    return .{
+        .extra_headers = extra_headers,
+        .redirect_behavior = .unhandled,
+    };
 }
 
 /// Parse headers from a JSON object string: {"Key": "Value", ...}
@@ -369,6 +375,11 @@ test "isSensitiveHeader checks" {
     try std.testing.expect(isSensitiveHeader("password-header"));
     try std.testing.expect(!isSensitiveHeader("Content-Type"));
     try std.testing.expect(!isSensitiveHeader("Accept"));
+}
+
+test "http_request disables automatic redirects" {
+    const opts = buildRequestOptions(&.{});
+    try std.testing.expect(opts.redirect_behavior == .unhandled);
 }
 
 // ── execute-level tests ──────────────────────────────────────
