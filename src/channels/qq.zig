@@ -27,7 +27,7 @@ pub const QQConfig = struct {
     /// Group message permission policy.
     group_policy: QQGroupPolicy = .allow,
     /// Allowed group IDs (used when group_policy == .allowlist).
-    allowlist: []const []const u8 = &.{},
+    group_allow_from: []const []const u8 = &.{},
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -232,7 +232,7 @@ pub fn buildAuthHeader(buf: []u8, app_id: []const u8, bot_token: []const u8) ![]
 pub fn isGroupAllowed(config: QQConfig, group_id: []const u8) bool {
     return switch (config.group_policy) {
         .allow => true,
-        .allowlist => root.isAllowedExact(config.allowlist, group_id),
+        .allowlist => root.isAllowedExact(config.group_allow_from, group_id),
     };
 }
 
@@ -573,7 +573,7 @@ test "qq config defaults" {
     try std.testing.expectEqualStrings("", config.bot_token);
     try std.testing.expect(!config.sandbox);
     try std.testing.expect(config.group_policy == .allow);
-    try std.testing.expectEqual(@as(usize, 0), config.allowlist.len);
+    try std.testing.expectEqual(@as(usize, 0), config.group_allow_from.len);
 }
 
 test "qq config custom values" {
@@ -584,13 +584,13 @@ test "qq config custom values" {
         .bot_token = "token",
         .sandbox = true,
         .group_policy = .allowlist,
-        .allowlist = &list,
+        .group_allow_from = &list,
     };
     try std.testing.expectEqualStrings("12345", config.app_id);
     try std.testing.expectEqualStrings("secret", config.app_secret);
     try std.testing.expect(config.sandbox);
     try std.testing.expect(config.group_policy == .allowlist);
-    try std.testing.expectEqual(@as(usize, 2), config.allowlist.len);
+    try std.testing.expectEqual(@as(usize, 2), config.group_allow_from.len);
 }
 
 test "qq opcode fromInt" {
@@ -756,14 +756,14 @@ test "qq isGroupAllowed policy allow" {
 
 test "qq isGroupAllowed policy allowlist" {
     const list = [_][]const u8{ "group1", "group2" };
-    const config = QQConfig{ .group_policy = .allowlist, .allowlist = &list };
+    const config = QQConfig{ .group_policy = .allowlist, .group_allow_from = &list };
     try std.testing.expect(isGroupAllowed(config, "group1"));
     try std.testing.expect(isGroupAllowed(config, "group2"));
     try std.testing.expect(!isGroupAllowed(config, "group3"));
 }
 
 test "qq isGroupAllowed empty allowlist denies all" {
-    const config = QQConfig{ .group_policy = .allowlist, .allowlist = &.{} };
+    const config = QQConfig{ .group_policy = .allowlist, .group_allow_from = &.{} };
     try std.testing.expect(!isGroupAllowed(config, "anygroup"));
 }
 
@@ -928,7 +928,7 @@ test "qq handleGatewayEvent group allowlist filters" {
     const list = [_][]const u8{"allowed_guild"};
     var ch = QQChannel.init(alloc, .{
         .group_policy = .allowlist,
-        .allowlist = &list,
+        .group_allow_from = &list,
     });
     ch.setBus(&event_bus_inst);
 

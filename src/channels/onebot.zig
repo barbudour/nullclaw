@@ -15,6 +15,8 @@ pub const OneBotConfig = struct {
     access_token: ?[]const u8 = null,
     /// In group chats, only respond to messages starting with this prefix.
     group_trigger_prefix: ?[]const u8 = null,
+    /// Users allowed to interact. Empty = allow all.
+    allow_from: []const []const u8 = &.{},
 };
 
 // ════════════════════════════════════════════════════════════════════════════

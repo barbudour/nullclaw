@@ -232,10 +232,60 @@ pub const DingTalkConfig = struct {
 pub const SignalConfig = struct {
     http_url: []const u8,
     account: []const u8,
-    allowed_users: []const []const u8 = &.{},
-    allowed_groups: []const []const u8 = &.{},
+    allow_from: []const []const u8 = &.{},
+    group_allow_from: []const []const u8 = &.{},
     ignore_attachments: bool = true,
     ignore_stories: bool = true,
+};
+
+pub const EmailConfig = struct {
+    imap_host: []const u8 = "",
+    imap_port: u16 = 993,
+    imap_folder: []const u8 = "INBOX",
+    smtp_host: []const u8 = "",
+    smtp_port: u16 = 587,
+    smtp_tls: bool = true,
+    username: []const u8 = "",
+    password: []const u8 = "",
+    from_address: []const u8 = "",
+    poll_interval_secs: u64 = 60,
+    allow_from: []const []const u8 = &.{},
+    consent_granted: bool = true,
+};
+
+pub const LineConfig = struct {
+    access_token: []const u8 = "",
+    channel_secret: []const u8 = "",
+    port: u16 = 3000,
+    allow_from: []const []const u8 = &.{},
+};
+
+pub const QQGroupPolicy = enum {
+    allow,
+    allowlist,
+};
+
+pub const QQConfig = struct {
+    app_id: []const u8 = "",
+    app_secret: []const u8 = "",
+    bot_token: []const u8 = "",
+    sandbox: bool = false,
+    group_policy: QQGroupPolicy = .allow,
+    group_allow_from: []const []const u8 = &.{},
+};
+
+pub const OneBotConfig = struct {
+    url: []const u8 = "ws://localhost:6700",
+    access_token: ?[]const u8 = null,
+    group_trigger_prefix: ?[]const u8 = null,
+    allow_from: []const []const u8 = &.{},
+};
+
+pub const MaixCamConfig = struct {
+    port: u16 = 7777,
+    host: []const u8 = "0.0.0.0",
+    allow_from: []const []const u8 = &.{},
+    name: []const u8 = "maixcam",
 };
 
 pub const ChannelsConfig = struct {
@@ -251,6 +301,11 @@ pub const ChannelsConfig = struct {
     lark: ?LarkConfig = null,
     dingtalk: ?DingTalkConfig = null,
     signal: ?SignalConfig = null,
+    email: ?EmailConfig = null,
+    line: ?LineConfig = null,
+    qq: ?QQConfig = null,
+    onebot: ?OneBotConfig = null,
+    maixcam: ?MaixCamConfig = null,
 };
 
 // ── Memory config ───────────────────────────────────────────────

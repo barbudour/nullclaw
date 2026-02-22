@@ -527,6 +527,11 @@ pub fn runChannelsOnly(allocator: std.mem.Allocator) !void {
     try stdout.print("  Lark:      {s}\n", .{if (cfg.channels.lark != null) "configured" else "not configured"});
     try stdout.print("  DingTalk:  {s}\n", .{if (cfg.channels.dingtalk != null) "configured" else "not configured"});
     try stdout.print("  Signal:    {s}\n", .{if (cfg.channels.signal != null) "configured" else "not configured"});
+    try stdout.print("  Email:     {s}\n", .{if (cfg.channels.email != null) "configured" else "not configured"});
+    try stdout.print("  Line:      {s}\n", .{if (cfg.channels.line != null) "configured" else "not configured"});
+    try stdout.print("  QQ:        {s}\n", .{if (cfg.channels.qq != null) "configured" else "not configured"});
+    try stdout.print("  OneBot:    {s}\n", .{if (cfg.channels.onebot != null) "configured" else "not configured"});
+    try stdout.print("  MaixCam:   {s}\n", .{if (cfg.channels.maixcam != null) "configured" else "not configured"});
     try stdout.writeAll("\nTo modify channels, edit your config file:\n");
     try stdout.print("  {s}\n", .{cfg.config_path});
     try stdout.flush();

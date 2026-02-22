@@ -268,7 +268,13 @@ pub fn checkConfigSemantics(
         ch.whatsapp != null or
         ch.irc != null or
         ch.lark != null or
-        ch.dingtalk != null;
+        ch.dingtalk != null or
+        ch.signal != null or
+        ch.email != null or
+        ch.line != null or
+        ch.qq != null or
+        ch.onebot != null or
+        ch.maixcam != null;
 
     if (has_channel) {
         try items.append(allocator, DiagItem.ok(cat, "at least one channel configured"));

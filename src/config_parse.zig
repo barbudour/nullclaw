@@ -1044,11 +1044,11 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                             .account = try self.allocator.dupe(u8, acct.string),
                         };
                         if (self.channels.signal) |*sc| {
-                            if (acc.get("allowed_users")) |v| {
-                                if (v == .array) sc.allowed_users = try parseStringArray(self.allocator, v.array);
+                            if (acc.get("allow_from")) |v| {
+                                if (v == .array) sc.allow_from = try parseStringArray(self.allocator, v.array);
                             }
-                            if (acc.get("allowed_groups")) |v| {
-                                if (v == .array) sc.allowed_groups = try parseStringArray(self.allocator, v.array);
+                            if (acc.get("group_allow_from")) |v| {
+                                if (v == .array) sc.group_allow_from = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("ignore_attachments")) |v| {
                                 if (v == .bool) sc.ignore_attachments = v.bool;
@@ -1071,6 +1071,153 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                         }
                         if (wh.object.get("secret")) |v| {
                             if (v == .string) wc.secret = try self.allocator.dupe(u8, v.string);
+                        }
+                    }
+                }
+            }
+
+            // Email
+            if (ch.object.get("email")) |em| {
+                if (em == .object) {
+                    if (getFirstAccount(em.object)) |acc| {
+                        self.channels.email = .{};
+                        if (self.channels.email) |*ec| {
+                            if (acc.get("imap_host")) |v| {
+                                if (v == .string) ec.imap_host = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("imap_port")) |v| {
+                                if (v == .integer) ec.imap_port = @intCast(v.integer);
+                            }
+                            if (acc.get("imap_folder")) |v| {
+                                if (v == .string) ec.imap_folder = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("smtp_host")) |v| {
+                                if (v == .string) ec.smtp_host = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("smtp_port")) |v| {
+                                if (v == .integer) ec.smtp_port = @intCast(v.integer);
+                            }
+                            if (acc.get("smtp_tls")) |v| {
+                                if (v == .bool) ec.smtp_tls = v.bool;
+                            }
+                            if (acc.get("username")) |v| {
+                                if (v == .string) ec.username = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("password")) |v| {
+                                if (v == .string) ec.password = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("from_address")) |v| {
+                                if (v == .string) ec.from_address = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("poll_interval_secs")) |v| {
+                                if (v == .integer) ec.poll_interval_secs = @intCast(v.integer);
+                            }
+                            if (acc.get("allow_from")) |v| {
+                                if (v == .array) ec.allow_from = try parseStringArray(self.allocator, v.array);
+                            }
+                            if (acc.get("consent_granted")) |v| {
+                                if (v == .bool) ec.consent_granted = v.bool;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Line
+            if (ch.object.get("line")) |ln| {
+                if (ln == .object) {
+                    if (getFirstAccount(ln.object)) |acc| ln_blk: {
+                        const at = acc.get("access_token") orelse break :ln_blk;
+                        const cs = acc.get("channel_secret") orelse break :ln_blk;
+                        if (at != .string or cs != .string) break :ln_blk;
+                        self.channels.line = .{
+                            .access_token = try self.allocator.dupe(u8, at.string),
+                            .channel_secret = try self.allocator.dupe(u8, cs.string),
+                        };
+                        if (self.channels.line) |*lc| {
+                            if (acc.get("port")) |v| {
+                                if (v == .integer) lc.port = @intCast(v.integer);
+                            }
+                            if (acc.get("allow_from")) |v| {
+                                if (v == .array) lc.allow_from = try parseStringArray(self.allocator, v.array);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // QQ
+            if (ch.object.get("qq")) |qq| {
+                if (qq == .object) {
+                    if (getFirstAccount(qq.object)) |acc| {
+                        self.channels.qq = .{};
+                        if (self.channels.qq) |*qc| {
+                            if (acc.get("app_id")) |v| {
+                                if (v == .string) qc.app_id = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("app_secret")) |v| {
+                                if (v == .string) qc.app_secret = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("bot_token")) |v| {
+                                if (v == .string) qc.bot_token = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("sandbox")) |v| {
+                                if (v == .bool) qc.sandbox = v.bool;
+                            }
+                            if (acc.get("group_policy")) |v| {
+                                if (v == .string) {
+                                    if (std.mem.eql(u8, v.string, "allowlist")) qc.group_policy = .allowlist;
+                                }
+                            }
+                            if (acc.get("group_allow_from")) |v| {
+                                if (v == .array) qc.group_allow_from = try parseStringArray(self.allocator, v.array);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // OneBot
+            if (ch.object.get("onebot")) |ob| {
+                if (ob == .object) {
+                    if (getFirstAccount(ob.object)) |acc| {
+                        self.channels.onebot = .{};
+                        if (self.channels.onebot) |*oc| {
+                            if (acc.get("url")) |v| {
+                                if (v == .string) oc.url = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("access_token")) |v| {
+                                if (v == .string) oc.access_token = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("group_trigger_prefix")) |v| {
+                                if (v == .string) oc.group_trigger_prefix = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("allow_from")) |v| {
+                                if (v == .array) oc.allow_from = try parseStringArray(self.allocator, v.array);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // MaixCam
+            if (ch.object.get("maixcam")) |mx| {
+                if (mx == .object) {
+                    if (getFirstAccount(mx.object)) |acc| {
+                        self.channels.maixcam = .{};
+                        if (self.channels.maixcam) |*mc| {
+                            if (acc.get("port")) |v| {
+                                if (v == .integer) mc.port = @intCast(v.integer);
+                            }
+                            if (acc.get("host")) |v| {
+                                if (v == .string) mc.host = try self.allocator.dupe(u8, v.string);
+                            }
+                            if (acc.get("allow_from")) |v| {
+                                if (v == .array) mc.allow_from = try parseStringArray(self.allocator, v.array);
+                            }
+                            if (acc.get("name")) |v| {
+                                if (v == .string) mc.name = try self.allocator.dupe(u8, v.string);
+                            }
                         }
                     }
                 }

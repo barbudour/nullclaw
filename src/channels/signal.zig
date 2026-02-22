@@ -13,8 +13,8 @@
 //!         "default": {
 //!           "http_url": "http://127.0.0.1:8080",
 //!           "account": "+1234567890",
-//!           "allowed_users": ["+1111111111", "uuid:a1b2c3d4-..."],
-//!           "allowed_groups": ["group123"],
+//!           "allow_from": ["+1111111111", "uuid:a1b2c3d4-..."],
+//!           "group_allow_from": ["group123"],
 //!           "ignore_attachments": true,
 //!           "ignore_stories": true
 //!         }
@@ -86,9 +86,9 @@ pub const SignalChannel = struct {
     /// Signal account identifier (E.164 phone, e.g. "+1234567890").
     account: []const u8,
     /// Users allowed to interact. Empty = deny all (secure by default).
-    allowed_users: []const []const u8,
+    allow_from: []const []const u8,
     /// Groups allowed. Empty = deny all groups / DMs only.
-    allowed_groups: []const []const u8,
+    group_allow_from: []const []const u8,
     /// Skip messages that contain only attachments (no text).
     ignore_attachments: bool,
     /// Skip story messages.
@@ -98,8 +98,8 @@ pub const SignalChannel = struct {
         allocator: std.mem.Allocator,
         http_url: []const u8,
         account: []const u8,
-        allowed_users: []const []const u8,
-        allowed_groups: []const []const u8,
+        allow_from: []const []const u8,
+        group_allow_from: []const []const u8,
         ignore_attachments: bool,
         ignore_stories: bool,
     ) SignalChannel {
@@ -107,8 +107,8 @@ pub const SignalChannel = struct {
             .allocator = allocator,
             .http_url = stripTrailingSlashes(http_url),
             .account = account,
-            .allowed_users = allowed_users,
-            .allowed_groups = allowed_groups,
+            .allow_from = allow_from,
+            .group_allow_from = group_allow_from,
             .ignore_attachments = ignore_attachments,
             .ignore_stories = ignore_stories,
         };
@@ -164,8 +164,8 @@ pub const SignalChannel = struct {
     /// - `*` = allow everyone.
     /// - Entries with `uuid:` prefix are normalized before comparison.
     pub fn isSenderAllowed(self: *const SignalChannel, sender: []const u8) bool {
-        if (self.allowed_users.len == 0) return false;
-        for (self.allowed_users) |entry| {
+        if (self.allow_from.len == 0) return false;
+        for (self.allow_from) |entry| {
             if (std.mem.eql(u8, entry, "*")) return true;
             if (std.mem.eql(u8, normalizeAllowEntry(entry), normalizeAllowEntry(sender))) return true;
         }
@@ -177,8 +177,8 @@ pub const SignalChannel = struct {
     /// - Empty list = deny all groups (DMs only, secure by default).
     /// - `*` = allow all groups.
     pub fn isGroupAllowed(self: *const SignalChannel, group_id: []const u8) bool {
-        if (self.allowed_groups.len == 0) return false;
-        for (self.allowed_groups) |entry| {
+        if (self.group_allow_from.len == 0) return false;
+        for (self.group_allow_from) |entry| {
             if (std.mem.eql(u8, entry, "*")) return true;
             if (std.mem.eql(u8, entry, group_id)) return true;
         }
@@ -389,9 +389,12 @@ pub const SignalChannel = struct {
         if (env_obj.get("storyMessage")) |story| {
             has_story = true;
             if (story.object.get("message")) |msg| {
-                if (msg == .string) dm_message = msg.string;
-                if (msg.object.get("timestamp")) |ts| {
-                    if (ts == .integer) dm_timestamp = @intCast(ts.integer);
+                if (msg == .string) {
+                    dm_message = msg.string;
+                } else if (msg == .object) {
+                    if (msg.object.get("timestamp")) |ts| {
+                        if (ts == .integer) dm_timestamp = @intCast(ts.integer);
+                    }
                 }
             }
         }
@@ -660,8 +663,8 @@ test "creates with correct fields" {
     );
     try std.testing.expectEqualStrings("http://127.0.0.1:8686", ch.http_url);
     try std.testing.expectEqualStrings("+1234567890", ch.account);
-    try std.testing.expectEqual(@as(usize, 1), ch.allowed_users.len);
-    try std.testing.expectEqual(@as(usize, 0), ch.allowed_groups.len);
+    try std.testing.expectEqual(@as(usize, 1), ch.allow_from.len);
+    try std.testing.expectEqual(@as(usize, 0), ch.group_allow_from.len);
     try std.testing.expect(ch.ignore_attachments);
     try std.testing.expect(ch.ignore_stories);
 }
@@ -1462,7 +1465,7 @@ test "process envelope no source name not set" {
 }
 
 test "process envelope dm accepted with empty allowed groups" {
-    // Empty allowed_groups = DMs only. DMs should be accepted.
+    // Empty group_allow_from = DMs only. DMs should be accepted.
     const users = [_][]const u8{"+1111111111"};
     const ch = SignalChannel.init(
         std.testing.allocator,
@@ -1492,7 +1495,7 @@ test "process envelope dm accepted with empty allowed groups" {
 }
 
 test "process envelope group denied with empty allowed groups" {
-    // Empty allowed_groups = deny all groups.
+    // Empty group_allow_from = deny all groups.
     const users = [_][]const u8{"*"};
     const ch = SignalChannel.init(
         std.testing.allocator,

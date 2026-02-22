@@ -91,6 +91,11 @@ pub fn run(allocator: std.mem.Allocator) !void {
     try w.print("  Matrix:    {s}\n", .{if (cfg.channels.matrix != null) "configured" else "not configured"});
     try w.print("  IRC:       {s}\n", .{if (cfg.channels.irc != null) "configured" else "not configured"});
     try w.print("  Signal:    {s}\n", .{if (cfg.channels.signal != null) "configured" else "not configured"});
+    try w.print("  Email:     {s}\n", .{if (cfg.channels.email != null) "configured" else "not configured"});
+    try w.print("  Line:      {s}\n", .{if (cfg.channels.line != null) "configured" else "not configured"});
+    try w.print("  QQ:        {s}\n", .{if (cfg.channels.qq != null) "configured" else "not configured"});
+    try w.print("  OneBot:    {s}\n", .{if (cfg.channels.onebot != null) "configured" else "not configured"});
+    try w.print("  MaixCam:   {s}\n", .{if (cfg.channels.maixcam != null) "configured" else "not configured"});
 
     try w.flush();
 }

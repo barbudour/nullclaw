@@ -45,13 +45,15 @@ pub const MatrixChannel = struct {
 
     // ── Channel vtable ──────────────────────────────────────────────
 
-    /// Send a message to the configured Matrix room via PUT /_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}.
-    pub fn sendMessage(self: *MatrixChannel, text: []const u8) !void {
+    /// Send a message to a Matrix room via PUT /_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}.
+    /// If `target` is non-empty, it overrides the configured room_id.
+    pub fn sendMessage(self: *MatrixChannel, target: []const u8, text: []const u8) !void {
+        const room = if (target.len > 0) target else self.room_id;
         // Build URL with unique transaction ID
         var url_buf: [1024]u8 = undefined;
         var url_fbs = std.io.fixedBufferStream(&url_buf);
         const txn_id = @as(u64, @intCast(@as(u128, @intCast(std.time.nanoTimestamp())) / 1_000_000));
-        try url_fbs.writer().print("{s}/_matrix/client/v3/rooms/{s}/send/m.room.message/yc_{d}", .{ self.homeserver, self.room_id, txn_id });
+        try url_fbs.writer().print("{s}/_matrix/client/v3/rooms/{s}/send/m.room.message/yc_{d}", .{ self.homeserver, room, txn_id });
         const url = url_fbs.getWritten();
 
         // Build JSON body: {"msgtype":"m.text","body":"..."}
@@ -95,9 +97,9 @@ pub const MatrixChannel = struct {
         _ = ptr;
     }
 
-    fn vtableSend(ptr: *anyopaque, _: []const u8, message: []const u8) anyerror!void {
+    fn vtableSend(ptr: *anyopaque, target: []const u8, message: []const u8) anyerror!void {
         const self: *MatrixChannel = @ptrCast(@alignCast(ptr));
-        try self.sendMessage(message);
+        try self.sendMessage(target, message);
     }
 
     fn vtableName(ptr: *anyopaque) []const u8 {

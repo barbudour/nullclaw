@@ -38,7 +38,7 @@ pub const WhatsAppChannel = struct {
 
     /// Check if a phone number is allowed (E.164 format: +1234567890).
     pub fn isNumberAllowed(self: *const WhatsAppChannel, phone: []const u8) bool {
-        return root.isAllowedExact(self.allow_from, phone);
+        return root.isAllowed(self.allow_from, phone);
     }
 
     /// Normalize a phone number to E.164 (prepend + if missing).

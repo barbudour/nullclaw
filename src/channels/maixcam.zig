@@ -60,8 +60,8 @@ pub const MaixCamChannel = struct {
     /// Check if a device_id is permitted by the allowlist.
     /// If the allowlist is empty, all devices are allowed.
     pub fn isDeviceAllowed(self: *const MaixCamChannel, device_id: []const u8) bool {
-        if (self.config.allowlist.len == 0) return true;
-        for (self.config.allowlist) |allowed| {
+        if (self.config.allow_from.len == 0) return true;
+        for (self.config.allow_from) |allowed| {
             if (std.mem.eql(u8, allowed, "*")) return true;
             if (std.mem.eql(u8, allowed, device_id)) return true;
         }
@@ -427,7 +427,7 @@ pub const MaixCamChannel = struct {
 pub const MaixCamConfig = struct {
     port: u16 = 7777,
     host: []const u8 = "0.0.0.0",
-    allowlist: []const []const u8 = &.{},
+    allow_from: []const []const u8 = &.{},
     name: []const u8 = "maixcam",
 };
 
@@ -439,7 +439,7 @@ test "maixcam config defaults" {
     const config = MaixCamConfig{};
     try std.testing.expectEqual(@as(u16, 7777), config.port);
     try std.testing.expectEqualStrings("0.0.0.0", config.host);
-    try std.testing.expectEqual(@as(usize, 0), config.allowlist.len);
+    try std.testing.expectEqual(@as(usize, 0), config.allow_from.len);
     try std.testing.expectEqualStrings("maixcam", config.name);
 }
 
@@ -448,12 +448,12 @@ test "maixcam config custom values" {
     const config = MaixCamConfig{
         .port = 9999,
         .host = "192.168.1.100",
-        .allowlist = &allowlist,
+        .allow_from = &allowlist,
         .name = "vision",
     };
     try std.testing.expectEqual(@as(u16, 9999), config.port);
     try std.testing.expectEqualStrings("192.168.1.100", config.host);
-    try std.testing.expectEqual(@as(usize, 2), config.allowlist.len);
+    try std.testing.expectEqual(@as(usize, 2), config.allow_from.len);
     try std.testing.expectEqualStrings("vision", config.name);
 }
 
@@ -489,7 +489,7 @@ test "maixcam allowlist empty allows all" {
 
 test "maixcam allowlist permits listed devices" {
     const allowlist = [_][]const u8{ "cam-01", "cam-02" };
-    const ch = MaixCamChannel.init(std.testing.allocator, .{ .allowlist = &allowlist });
+    const ch = MaixCamChannel.init(std.testing.allocator, .{ .allow_from = &allowlist });
     try std.testing.expect(ch.isDeviceAllowed("cam-01"));
     try std.testing.expect(ch.isDeviceAllowed("cam-02"));
     try std.testing.expect(!ch.isDeviceAllowed("cam-03"));
@@ -498,14 +498,14 @@ test "maixcam allowlist permits listed devices" {
 
 test "maixcam allowlist wildcard allows all" {
     const allowlist = [_][]const u8{"*"};
-    const ch = MaixCamChannel.init(std.testing.allocator, .{ .allowlist = &allowlist });
+    const ch = MaixCamChannel.init(std.testing.allocator, .{ .allow_from = &allowlist });
     try std.testing.expect(ch.isDeviceAllowed("anything"));
     try std.testing.expect(ch.isDeviceAllowed("cam-99"));
 }
 
 test "maixcam allowlist exact match only" {
     const allowlist = [_][]const u8{"cam-01"};
-    const ch = MaixCamChannel.init(std.testing.allocator, .{ .allowlist = &allowlist });
+    const ch = MaixCamChannel.init(std.testing.allocator, .{ .allow_from = &allowlist });
     try std.testing.expect(ch.isDeviceAllowed("cam-01"));
     try std.testing.expect(!ch.isDeviceAllowed("CAM-01"));
     try std.testing.expect(!ch.isDeviceAllowed("cam-01 "));
@@ -698,12 +698,12 @@ test "maixcam init stores config" {
     const ch = MaixCamChannel.init(std.testing.allocator, .{
         .port = 8888,
         .host = "127.0.0.1",
-        .allowlist = &allowlist,
+        .allow_from = &allowlist,
         .name = "test_cam",
     });
     try std.testing.expectEqual(@as(u16, 8888), ch.config.port);
     try std.testing.expectEqualStrings("127.0.0.1", ch.config.host);
-    try std.testing.expectEqual(@as(usize, 1), ch.config.allowlist.len);
+    try std.testing.expectEqual(@as(usize, 1), ch.config.allow_from.len);
     try std.testing.expectEqualStrings("test_cam", ch.config.name);
 }
 

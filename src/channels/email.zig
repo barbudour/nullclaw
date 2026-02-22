@@ -40,9 +40,9 @@ pub const EmailChannel = struct {
     /// Check if a sender email is in the allowlist.
     /// Supports full addresses, @domain, or bare domain matching.
     pub fn isSenderAllowed(self: *const EmailChannel, email_addr: []const u8) bool {
-        if (self.config.allowed_senders.len == 0) return false;
+        if (self.config.allow_from.len == 0) return false;
 
-        for (self.config.allowed_senders) |allowed| {
+        for (self.config.allow_from) |allowed| {
             if (std.mem.eql(u8, allowed, "*")) return true;
 
             if (allowed.len > 0 and allowed[0] == '@') {
@@ -220,7 +220,7 @@ pub const EmailConfig = struct {
     password: []const u8 = "",
     from_address: []const u8 = "",
     poll_interval_secs: u64 = 60,
-    allowed_senders: []const []const u8 = &.{},
+    allow_from: []const []const u8 = &.{},
     consent_granted: bool = true,
 };
 
@@ -516,21 +516,21 @@ test "bounded seen set evicts in fifo order" {
 
 test "email sender allowed case insensitive full address" {
     const senders = [_][]const u8{"User@Example.COM"};
-    const ch = EmailChannel.init(std.testing.allocator, .{ .allowed_senders = &senders });
+    const ch = EmailChannel.init(std.testing.allocator, .{ .allow_from = &senders });
     try std.testing.expect(ch.isSenderAllowed("user@example.com"));
     try std.testing.expect(ch.isSenderAllowed("USER@EXAMPLE.COM"));
 }
 
 test "email sender domain with @ case insensitive" {
     const senders = [_][]const u8{"@Example.Com"};
-    const ch = EmailChannel.init(std.testing.allocator, .{ .allowed_senders = &senders });
+    const ch = EmailChannel.init(std.testing.allocator, .{ .allow_from = &senders });
     try std.testing.expect(ch.isSenderAllowed("anyone@example.com"));
     try std.testing.expect(ch.isSenderAllowed("USER@EXAMPLE.COM"));
 }
 
 test "email sender multiple senders" {
     const senders = [_][]const u8{ "alice@example.com", "bob@test.com" };
-    const ch = EmailChannel.init(std.testing.allocator, .{ .allowed_senders = &senders });
+    const ch = EmailChannel.init(std.testing.allocator, .{ .allow_from = &senders });
     try std.testing.expect(ch.isSenderAllowed("alice@example.com"));
     try std.testing.expect(ch.isSenderAllowed("bob@test.com"));
     try std.testing.expect(!ch.isSenderAllowed("eve@evil.com"));
@@ -589,14 +589,14 @@ test "bounded seen set large capacity" {
 
 test "email sender wildcard with specific" {
     const senders = [_][]const u8{ "alice@example.com", "*" };
-    const ch = EmailChannel.init(std.testing.allocator, .{ .allowed_senders = &senders });
+    const ch = EmailChannel.init(std.testing.allocator, .{ .allow_from = &senders });
     try std.testing.expect(ch.isSenderAllowed("anyone@anything.com"));
 }
 
 test "email sender short address not domain match" {
     // An address shorter than the domain should not match
     const senders = [_][]const u8{"example.com"};
-    const ch = EmailChannel.init(std.testing.allocator, .{ .allowed_senders = &senders });
+    const ch = EmailChannel.init(std.testing.allocator, .{ .allow_from = &senders });
     try std.testing.expect(!ch.isSenderAllowed("@example.com")); // needs local part > 0
 }
 

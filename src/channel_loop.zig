@@ -300,8 +300,8 @@ pub fn runSignalLoop(
         allocator,
         signal_config.http_url,
         signal_config.account,
-        signal_config.allowed_users,
-        signal_config.allowed_groups,
+        signal_config.allow_from,
+        signal_config.group_allow_from,
         signal_config.ignore_attachments,
         signal_config.ignore_stories,
     );

@@ -348,6 +348,11 @@ fn runChannel(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
         std.debug.print("  Lark:      {s}\n", .{if (cfg.channels.lark != null) "configured" else "not configured"});
         std.debug.print("  DingTalk:  {s}\n", .{if (cfg.channels.dingtalk != null) "configured" else "not configured"});
         std.debug.print("  Signal:    {s}\n", .{if (cfg.channels.signal != null) "configured" else "not configured"});
+        std.debug.print("  Email:     {s}\n", .{if (cfg.channels.email != null) "configured" else "not configured"});
+        std.debug.print("  Line:      {s}\n", .{if (cfg.channels.line != null) "configured" else "not configured"});
+        std.debug.print("  QQ:        {s}\n", .{if (cfg.channels.qq != null) "configured" else "not configured"});
+        std.debug.print("  OneBot:    {s}\n", .{if (cfg.channels.onebot != null) "configured" else "not configured"});
+        std.debug.print("  MaixCam:   {s}\n", .{if (cfg.channels.maixcam != null) "configured" else "not configured"});
     } else if (std.mem.eql(u8, subcmd, "start")) {
         try runChannelStart(allocator, sub_args[1..]);
     } else if (std.mem.eql(u8, subcmd, "doctor")) {
@@ -742,24 +747,24 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
     std.debug.print("  Temperature: {d:.1}\n", .{temperature});
     std.debug.print("  Signal URL: {s}\n", .{signal_config.http_url});
     std.debug.print("  Account: {s}\n", .{signal_config.account});
-    if (signal_config.allowed_users.len == 0) {
+    if (signal_config.allow_from.len == 0) {
         std.debug.print("  Allowed users: (none — all messages will be denied)\n", .{});
-    } else if (signal_config.allowed_users.len == 1 and std.mem.eql(u8, signal_config.allowed_users[0], "*")) {
+    } else if (signal_config.allow_from.len == 1 and std.mem.eql(u8, signal_config.allow_from[0], "*")) {
         std.debug.print("  Allowed users: *\n", .{});
     } else {
         std.debug.print("  Allowed users:", .{});
-        for (signal_config.allowed_users) |u| {
+        for (signal_config.allow_from) |u| {
             std.debug.print(" {s}", .{u});
         }
         std.debug.print("\n", .{});
     }
-    if (signal_config.allowed_groups.len == 0) {
+    if (signal_config.group_allow_from.len == 0) {
         std.debug.print("  Allowed groups: (none)\n", .{});
-    } else if (signal_config.allowed_groups.len == 1 and std.mem.eql(u8, signal_config.allowed_groups[0], "*")) {
+    } else if (signal_config.group_allow_from.len == 1 and std.mem.eql(u8, signal_config.group_allow_from[0], "*")) {
         std.debug.print("  Allowed groups: *\n", .{});
     } else {
         std.debug.print("  Allowed groups:", .{});
-        for (signal_config.allowed_groups) |g| {
+        for (signal_config.group_allow_from) |g| {
             std.debug.print(" {s}", .{g});
         }
         std.debug.print("\n", .{});
@@ -769,8 +774,8 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
         allocator,
         signal_config.http_url,
         signal_config.account,
-        signal_config.allowed_users,
-        signal_config.allowed_groups,
+        signal_config.allow_from,
+        signal_config.group_allow_from,
         signal_config.ignore_attachments,
         signal_config.ignore_stories,
     );
@@ -895,11 +900,7 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
         if (messages.len > 0) {
             // Free message memory
             for (messages) |msg| {
-                allocator.free(msg.id);
-                allocator.free(msg.sender);
-                allocator.free(msg.content);
-                if (msg.first_name) |fn_| allocator.free(fn_);
-                if (msg.reply_target) |rt| allocator.free(rt);
+                msg.deinit(allocator);
             }
             allocator.free(messages);
         }

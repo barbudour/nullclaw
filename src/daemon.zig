@@ -294,8 +294,8 @@ fn channelSupervisorThread(
                 allocator,
                 sg_config.http_url,
                 sg_config.account,
-                sg_config.allowed_users,
-                sg_config.allowed_groups,
+                sg_config.allow_from,
+                sg_config.group_allow_from,
                 sg_config.ignore_attachments,
                 sg_config.ignore_stories,
             );
