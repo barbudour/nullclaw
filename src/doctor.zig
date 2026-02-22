@@ -13,12 +13,44 @@ const platform = @import("platform.zig");
 const Config = @import("config.zig").Config;
 const daemon = @import("daemon.zig");
 const cron = @import("cron.zig");
+const builtin = @import("builtin");
 
 /// Staleness thresholds (seconds).
 const DAEMON_STALE_SECONDS: i64 = 30;
 const SCHEDULER_STALE_SECONDS: i64 = 120;
 const CHANNEL_STALE_SECONDS: i64 = 300;
 const COMMAND_VERSION_PREVIEW_CHARS: usize = 60;
+// ── ANSI color support ──────────────────────────────────────────
+
+const Color = struct {
+    const reset = "\x1b[0m";
+    const green = "\x1b[32m";
+    const yellow = "\x1b[33m";
+    const red = "\x1b[31m";
+};
+
+pub fn shouldColorize(file: std.fs.File) bool {
+    // Never colorize if stdout is redirected to a file/pipe
+    if (!file.isTty()) return false;
+
+    // On Windows, attempt to enable Virtual Terminal Processing.
+    // If that fails, fall back to no color.
+    if (builtin.os.tag == .windows) {
+        return enableWindowsVT100() catch false;
+    }
+
+    return true;
+}
+
+/// Windows-specific: enable ENABLE_VIRTUAL_TERMINAL_PROCESSING on stdout.
+fn enableWindowsVT100() !bool {
+    const windows = std.os.windows;
+    const handle = try windows.GetStdHandle(windows.STD_OUTPUT_HANDLE);
+    var mode: windows.DWORD = 0;
+    if (windows.kernel32.GetConsoleMode(handle, &mode) == 0) return false;
+    mode |= 0x0004; // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    return windows.kernel32.SetConsoleMode(handle, mode) != 0;
+}
 
 // ── Diagnostic types ────────────────────────────────────────────
 
@@ -50,6 +82,14 @@ pub const DiagItem = struct {
             .err => "[ERR]",
         };
     }
+
+    pub fn iconColored(self: DiagItem) []const u8 {
+        return switch (self.severity) {
+            .ok => Color.green ++ "[ok]" ++ Color.reset,
+            .warn => Color.yellow ++ "[warn]" ++ Color.reset,
+            .err => Color.red ++ "[ERR]" ++ Color.reset,
+        };
+    }
 };
 
 /// Legacy diagnostic result (kept for programmatic access).
@@ -66,6 +106,7 @@ pub fn runDoctor(
     allocator: std.mem.Allocator,
     config: *const Config,
     writer: anytype,
+    color: bool,
 ) !void {
     var items: std.ArrayList(DiagItem) = .empty;
     defer items.deinit(allocator);
@@ -94,7 +135,8 @@ pub fn runDoctor(
             current_cat = item.category;
             try writer.print("  [{s}]\n", .{current_cat});
         }
-        try writer.print("    {s} {s}\n", .{ item.icon(), item.message });
+        const ic = if (color) item.iconColored() else item.icon();
+        try writer.print("    {s} {s}\n", .{ ic, item.message });
         switch (item.severity) {
             .ok => ok_count += 1,
             .warn => warn_count += 1,
@@ -110,12 +152,18 @@ pub fn runDoctor(
 
 /// Legacy entry point — uses stdout directly.
 pub fn run(allocator: std.mem.Allocator) !void {
+    const stdout_file = std.fs.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
-    var bw = std.fs.File.stdout().writer(&stdout_buf);
+    var bw = stdout_file.writer(&stdout_buf);
     const stdout = &bw.interface;
+    const color = shouldColorize(stdout_file);
 
     var cfg = Config.load(allocator) catch {
-        try stdout.writeAll("[ERR] No config found -- run `nullclaw onboard` first\n");
+        const prefix = if (color)
+            Color.red ++ "[ERR]" ++ Color.reset
+        else
+            "[ERR]";
+        try stdout.print("{s} No config found -- run `nullclaw onboard` first\n", .{prefix});
         try stdout.flush();
         return;
     };
@@ -124,7 +172,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    try runDoctor(arena.allocator(), &cfg, stdout);
+    try runDoctor(arena.allocator(), &cfg, stdout, color);
     try stdout.flush();
 }
 
