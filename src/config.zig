@@ -80,6 +80,7 @@ pub const Config = struct {
     audio_media: AudioMediaConfig = .{},
     default_provider: []const u8 = "openrouter",
     default_model: ?[]const u8 = null,
+    legacy_default_provider_detected: bool = false,
     legacy_default_model_detected: bool = false,
     default_temperature: f64 = 0.7,
     reasoning_effort: ?[]const u8 = null,
@@ -393,7 +394,6 @@ pub const Config = struct {
         try w.print("{{\n", .{});
 
         // Top-level fields
-        try w.print("  \"default_provider\": \"{s}\",\n", .{self.default_provider});
         try w.print("  \"default_temperature\": {d:.1},\n", .{self.default_temperature});
 
         // models.providers
@@ -424,7 +424,7 @@ pub const Config = struct {
             if (has_model or has_heartbeat) {
                 try w.print("  \"agents\": {{\n    \"defaults\": {{\n", .{});
                 if (self.default_model) |model| {
-                    try w.print("      \"model\": {{\"primary\": \"{s}\"}}", .{model});
+                    try w.print("      \"model\": {{\"primary\": \"{s}/{s}\"}}", .{ self.default_provider, model });
                     if (has_heartbeat) try w.print(",", .{});
                     try w.print("\n", .{});
                 }
@@ -553,7 +553,9 @@ pub const Config = struct {
     // ── Validation ──────────────────────────────────────────────
 
     pub const ValidationError = error{
+        LegacyDefaultProviderField,
         LegacyDefaultModelField,
+        InvalidDefaultModelPrimary,
         NoDefaultModel,
         TemperatureOutOfRange,
         InvalidPort,
@@ -562,8 +564,14 @@ pub const Config = struct {
     };
 
     pub fn validate(self: *const Config) ValidationError!void {
+        if (self.legacy_default_provider_detected) {
+            return ValidationError.LegacyDefaultProviderField;
+        }
         if (self.legacy_default_model_detected) {
             return ValidationError.LegacyDefaultModelField;
+        }
+        if (self.default_provider.len == 0) {
+            return ValidationError.InvalidDefaultModelPrimary;
         }
         if (self.default_model == null) {
             return ValidationError.NoDefaultModel;
@@ -585,12 +593,20 @@ pub const Config = struct {
     /// Print a human-readable validation error to stderr.
     pub fn printValidationError(err: ValidationError) void {
         switch (err) {
+            ValidationError.LegacyDefaultProviderField => std.debug.print(
+                "Config error: top-level default_provider is not supported. Set agents.defaults.model.primary instead.\n",
+                .{},
+            ),
             ValidationError.LegacyDefaultModelField => std.debug.print(
                 "Config error: top-level default_model is not supported. Set agents.defaults.model.primary instead.\n",
                 .{},
             ),
+            ValidationError.InvalidDefaultModelPrimary => std.debug.print(
+                "Config error: agents.defaults.model.primary must be in \"provider/model\" format.\n",
+                .{},
+            ),
             ValidationError.NoDefaultModel => std.debug.print(
-                "No default_model configured. Set it in ~/.nullclaw/config.json or run `nullclaw onboard`.\n",
+                "No default model configured. Set agents.defaults.model.primary in ~/.nullclaw/config.json or run `nullclaw onboard`.\n",
                 .{},
             ),
             ValidationError.TemperatureOutOfRange => std.debug.print("Config error: temperature must be between 0.0 and 2.0.\n", .{}),
@@ -626,10 +642,9 @@ test "json parse roundtrip" {
 
     const json =
         \\{
-        \\  "default_provider": "anthropic",
         \\  "default_temperature": 0.5,
         \\  "models": {"providers": {"anthropic": {"api_key": "sk-test"}}},
-        \\  "agents": {"defaults": {"model": {"primary": "claude-opus-4"}, "heartbeat": {"every": "15m"}}},
+        \\  "agents": {"defaults": {"model": {"primary": "anthropic/claude-opus-4"}, "heartbeat": {"every": "15m"}}},
         \\  "memory": {"backend": "markdown", "auto_save": false},
         \\  "gateway": {"port": 9090, "host": "0.0.0.0"},
         \\  "autonomy": {"level": "full", "workspace_only": false, "max_actions_per_hour": 50},
@@ -700,8 +715,7 @@ test "json parse reads reliability fallback providers and model fallbacks" {
 
     const json =
         \\{
-        \\  "default_provider": "openai-codex",
-        \\  "default_model": "gpt-5.3-codex",
+        \\  "agents": {"defaults": {"model": {"primary": "openai-codex/gpt-5.3-codex"}}},
         \\  "reliability": {
         \\    "provider_retries": 3,
         \\    "provider_backoff_ms": 750,
@@ -769,6 +783,19 @@ test "validation rejects null default_model" {
     try std.testing.expectError(Config.ValidationError.NoDefaultModel, cfg.validate());
 }
 
+test "validation rejects top-level default_provider" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const json =
+        \\{"default_provider":"anthropic","agents":{"defaults":{"model":{"primary":"anthropic/claude-opus-4"}}}}
+    ;
+    var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
+    try cfg.parseJson(json);
+    try std.testing.expect(cfg.legacy_default_provider_detected);
+    try std.testing.expectError(Config.ValidationError.LegacyDefaultProviderField, cfg.validate());
+}
+
 test "json parse top-level default_model" {
     const allocator = std.testing.allocator;
     const json =
@@ -789,11 +816,21 @@ test "validation rejects top-level default_model even when nested model exists" 
     const a = arena.allocator();
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = a };
     try cfg.parseJson(
-        \\{"default_model": "top-level-model", "agents": {"defaults": {"model": {"primary": "nested-model"}}}}
+        \\{"default_model": "top-level-model", "agents": {"defaults": {"model": {"primary": "anthropic/nested-model"}}}}
     );
     try std.testing.expect(cfg.legacy_default_model_detected);
     try std.testing.expectEqualStrings("nested-model", cfg.default_model.?);
     try std.testing.expectError(Config.ValidationError.LegacyDefaultModelField, cfg.validate());
+}
+
+test "validation rejects defaults.model.primary without provider prefix" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"agents":{"defaults":{"model":{"primary":"claude-opus-4"}}}}
+    ;
+    var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
+    try cfg.parseJson(json);
+    try std.testing.expectError(Config.ValidationError.InvalidDefaultModelPrimary, cfg.validate());
 }
 
 test "save includes channels section by default" {
@@ -1397,7 +1434,9 @@ test "parse agents.defaults.model.primary" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expectEqualStrings("anthropic/claude-opus-4", cfg.default_model.?);
+    try std.testing.expectEqualStrings("anthropic", cfg.default_provider);
+    try std.testing.expectEqualStrings("claude-opus-4", cfg.default_model.?);
+    allocator.free(cfg.default_provider);
     allocator.free(cfg.default_model.?);
 }
 
@@ -1689,13 +1728,14 @@ test "audio_media defaults" {
 test "defaultProviderKey returns key for default provider" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"default_provider": "groq", "models": {"providers": {"groq": {"api_key": "gsk_found"}}}}
+        \\{"agents":{"defaults":{"model":{"primary":"groq/llama-3.3-70b"}}},"models":{"providers":{"groq":{"api_key":"gsk_found"}}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
     try std.testing.expectEqualStrings("gsk_found", cfg.defaultProviderKey().?);
     // Cleanup
     allocator.free(cfg.default_provider);
+    allocator.free(cfg.default_model.?);
     for (cfg.providers) |e| {
         allocator.free(e.name);
         if (e.api_key) |k| allocator.free(k);

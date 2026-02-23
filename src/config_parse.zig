@@ -20,6 +20,15 @@ pub fn parseStringArray(allocator: std.mem.Allocator, arr: std.json.Array) ![]co
     return try list.toOwnedSlice(allocator);
 }
 
+fn splitPrimaryModelRef(primary: []const u8) ?struct { provider: []const u8, model: []const u8 } {
+    const slash = std.mem.indexOfScalar(u8, primary, '/') orelse return null;
+    if (slash == 0 or slash + 1 >= primary.len) return null;
+    return .{
+        .provider = primary[0..slash],
+        .model = primary[slash + 1 ..],
+    };
+}
+
 fn parsePeerKind(kind: []const u8) ?agent_routing.ChatType {
     if (std.mem.eql(u8, kind, "direct") or std.mem.eql(u8, kind, "dm")) return .direct;
     if (std.mem.eql(u8, kind, "group")) return .group;
@@ -272,7 +281,7 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
 
     // Top-level fields
     if (root.get("default_provider")) |v| {
-        if (v == .string) self.default_provider = try self.allocator.dupe(u8, v.string);
+        if (v == .string) self.legacy_default_provider_detected = true;
     }
     // Legacy key is no longer accepted. Require agents.defaults.model.primary.
     if (root.get("default_model")) |_| {
@@ -323,17 +332,25 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
         }
     }
 
-    // Agents section: agents.defaults.model.primary + agents.defaults.heartbeat + agents.list[]
+    // Agents section: agents.defaults.model.primary (provider/model) + agents.defaults.heartbeat + agents.list[]
     if (root.get("agents")) |agents_val| {
         if (agents_val == .object) {
-            // agents.defaults.model.primary → self.default_model
+            // agents.defaults.model.primary (provider/model) → self.default_provider + self.default_model
             // agents.defaults.heartbeat → self.heartbeat
             if (agents_val.object.get("defaults")) |defaults| {
                 if (defaults == .object) {
                     if (defaults.object.get("model")) |mdl| {
                         if (mdl == .object) {
                             if (mdl.object.get("primary")) |v| {
-                                if (v == .string) self.default_model = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) {
+                                    if (splitPrimaryModelRef(v.string)) |parsed_ref| {
+                                        self.default_provider = try self.allocator.dupe(u8, parsed_ref.provider);
+                                        self.default_model = try self.allocator.dupe(u8, parsed_ref.model);
+                                    } else {
+                                        self.default_provider = "";
+                                        self.default_model = null;
+                                    }
+                                }
                             }
                         }
                     }
