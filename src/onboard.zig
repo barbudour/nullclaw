@@ -57,7 +57,7 @@ pub const known_providers = [_]ProviderInfo{
 
     // --- Tier 2: Major cloud providers (Feb 2026 models) ---
     .{ .key = "gemini", .label = "Google Gemini", .default_model = "gemini-2.5-pro", .env_var = "GEMINI_API_KEY" },
-    .{ .key = "deepseek", .label = "DeepSeek", .default_model = "deepseek-v3.2", .env_var = "DEEPSEEK_API_KEY" },
+    .{ .key = "deepseek", .label = "DeepSeek", .default_model = "deepseek-chat", .env_var = "DEEPSEEK_API_KEY" },
     .{ .key = "groq", .label = "Groq (fast inference)", .default_model = "llama-3.3-70b-versatile", .env_var = "GROQ_API_KEY" },
 
     // --- Tier 3: OpenAI-compatible specialists ---
@@ -207,7 +207,7 @@ const gemini_fallback = [_][]const u8{
     "gemini-2.0-flash",
 };
 const deepseek_fallback = [_][]const u8{
-    "deepseek-v3.2",
+    "deepseek-chat",
     "deepseek-reasoner",
 };
 const ollama_fallback = [_][]const u8{
@@ -1227,7 +1227,7 @@ test "canonicalProviderName handles aliases" {
 test "defaultModelForProvider returns known models" {
     try std.testing.expectEqualStrings("claude-opus-4-6", defaultModelForProvider("anthropic"));
     try std.testing.expectEqualStrings("gpt-5.2", defaultModelForProvider("openai"));
-    try std.testing.expectEqualStrings("deepseek-v3.2", defaultModelForProvider("deepseek"));
+    try std.testing.expectEqualStrings("deepseek-chat", defaultModelForProvider("deepseek"));
     try std.testing.expectEqualStrings("llama4", defaultModelForProvider("ollama"));
 }
 
@@ -1915,7 +1915,7 @@ test "fetchModels returns models for deepseek (no network)" {
         std.testing.allocator.free(models);
     }
     try std.testing.expect(models.len >= 2);
-    try std.testing.expectEqualStrings("deepseek-v3.2", models[0]);
+    try std.testing.expectEqualStrings("deepseek-chat", models[0]);
 }
 
 test "fetchModels returns fallback for openai without key" {

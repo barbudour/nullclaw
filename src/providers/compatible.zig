@@ -117,6 +117,18 @@ pub const OpenAiCompatibleProvider = struct {
         return trimmed_path.len > 0 and !std.mem.eql(u8, trimmed_path, "/");
     }
 
+    /// Backward-compatible model aliases for provider-specific API model ids.
+    fn normalizeProviderModel(self: OpenAiCompatibleProvider, model: []const u8) []const u8 {
+        if (std.mem.eql(u8, self.name, "deepseek")) {
+            if (std.mem.eql(u8, model, "deepseek-v3.2") or
+                std.mem.eql(u8, model, "deepseek/deepseek-v3.2"))
+            {
+                return "deepseek-chat";
+            }
+        }
+        return model;
+    }
+
     /// Build a Responses API request JSON body.
     pub fn buildResponsesRequestBody(
         allocator: std.mem.Allocator,
@@ -406,11 +418,12 @@ pub const OpenAiCompatibleProvider = struct {
         callback_ctx: *anyopaque,
     ) anyerror!root.StreamChatResult {
         const self: *OpenAiCompatibleProvider = @ptrCast(@alignCast(ptr));
+        const effective_model = self.normalizeProviderModel(model);
 
         const url = try self.chatCompletionsUrl(allocator);
         defer allocator.free(url);
 
-        const body = try buildStreamingChatRequestBody(allocator, request, model, temperature, self.merge_system_into_user);
+        const body = try buildStreamingChatRequestBody(allocator, request, effective_model, temperature, self.merge_system_into_user);
         defer allocator.free(body);
 
         const auth = try self.authHeaderValue(allocator);
@@ -440,6 +453,7 @@ pub const OpenAiCompatibleProvider = struct {
         temperature: f64,
     ) anyerror![]const u8 {
         const self: *OpenAiCompatibleProvider = @ptrCast(@alignCast(ptr));
+        const effective_model = self.normalizeProviderModel(model);
 
         const url = try self.chatCompletionsUrl(allocator);
         defer allocator.free(url);
@@ -456,7 +470,7 @@ pub const OpenAiCompatibleProvider = struct {
             }
         }
 
-        const body = try buildRequestBody(allocator, eff_system, merged_msg orelse message, model, temperature);
+        const body = try buildRequestBody(allocator, eff_system, merged_msg orelse message, effective_model, temperature);
         defer allocator.free(body);
 
         const auth = try self.authHeaderValue(allocator);
@@ -474,7 +488,7 @@ pub const OpenAiCompatibleProvider = struct {
         return parseTextResponse(allocator, resp_body) catch |err| {
             // If chat completions failed and responses fallback is enabled, try the responses API
             if (self.supports_responses_fallback) {
-                return self.chatViaResponses(allocator, eff_system, merged_msg orelse message, model) catch {
+                return self.chatViaResponses(allocator, eff_system, merged_msg orelse message, effective_model) catch {
                     return err;
                 };
             }
@@ -490,11 +504,12 @@ pub const OpenAiCompatibleProvider = struct {
         temperature: f64,
     ) anyerror!ChatResponse {
         const self: *OpenAiCompatibleProvider = @ptrCast(@alignCast(ptr));
+        const effective_model = self.normalizeProviderModel(model);
 
         const url = try self.chatCompletionsUrl(allocator);
         defer allocator.free(url);
 
-        const body = try buildChatRequestBody(allocator, request, model, temperature, self.merge_system_into_user);
+        const body = try buildChatRequestBody(allocator, request, effective_model, temperature, self.merge_system_into_user);
         defer allocator.free(body);
 
         const auth = try self.authHeaderValue(allocator);
@@ -786,6 +801,18 @@ test "buildRequestBody without system" {
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "system") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"stream\":false") != null);
+}
+
+test "normalizeProviderModel maps DeepSeek v3.2 aliases to deepseek-chat" {
+    const deepseek = OpenAiCompatibleProvider.init(std.testing.allocator, "deepseek", "https://api.deepseek.com", null, .bearer);
+    try std.testing.expectEqualStrings("deepseek-chat", deepseek.normalizeProviderModel("deepseek-v3.2"));
+    try std.testing.expectEqualStrings("deepseek-chat", deepseek.normalizeProviderModel("deepseek/deepseek-v3.2"));
+    try std.testing.expectEqualStrings("deepseek-reasoner", deepseek.normalizeProviderModel("deepseek-reasoner"));
+}
+
+test "normalizeProviderModel leaves other providers unchanged" {
+    const openrouter = OpenAiCompatibleProvider.init(std.testing.allocator, "openrouter", "https://openrouter.ai/api/v1", null, .bearer);
+    try std.testing.expectEqualStrings("deepseek-v3.2", openrouter.normalizeProviderModel("deepseek-v3.2"));
 }
 
 test "parseTextResponse with null content fails" {
