@@ -26,6 +26,10 @@ jobs:
             target: macos-aarch64
             zig_target: ""
             ext: ""
+          - os: macos-latest
+            target: macos-x86_64
+            zig_target: x86_64-macos
+            ext: ""
           - os: windows-latest
             target: windows-x86_64
             zig_target: ""
@@ -62,6 +66,7 @@ jobs:
           mv nullclaw-linux-x86_64/nullclaw nullclaw-linux-x86_64.bin
           mv nullclaw-linux-aarch64/nullclaw nullclaw-linux-aarch64.bin
           mv nullclaw-macos-aarch64/nullclaw nullclaw-macos-aarch64.bin
+          mv nullclaw-macos-x86_64/nullclaw nullclaw-macos-x86_64.bin
           mv nullclaw-windows-x86_64/nullclaw.exe nullclaw-windows-x86_64.exe
 
       - name: Create release
@@ -71,6 +76,7 @@ jobs:
             nullclaw-linux-x86_64.bin
             nullclaw-linux-aarch64.bin
             nullclaw-macos-aarch64.bin
+            nullclaw-macos-x86_64.bin
             nullclaw-windows-x86_64.exe
           generate_release_notes: true
 
