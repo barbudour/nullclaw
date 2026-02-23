@@ -136,7 +136,7 @@ fn runGateway(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
         }
     }
 
-    try yc.gateway.run(allocator, host, port, &cfg);
+    try yc.gateway.run(allocator, host, port, &cfg, null);
 }
 
 // ── Daemon ───────────────────────────────────────────────────────
@@ -330,9 +330,9 @@ fn runChannel(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
     if (std.mem.eql(u8, subcmd, "list")) {
         std.debug.print("Configured channels:\n", .{});
         std.debug.print("  CLI:       {s}\n", .{if (cfg.channels.cli) "enabled" else "disabled"});
-        std.debug.print("  Telegram:  {s}\n", .{if (cfg.channels.telegram != null) "configured" else "not configured"});
-        std.debug.print("  Discord:   {s}\n", .{if (cfg.channels.discord != null) "configured" else "not configured"});
-        std.debug.print("  Slack:     {s}\n", .{if (cfg.channels.slack != null) "configured" else "not configured"});
+        std.debug.print("  Telegram:  {s}\n", .{if (cfg.channels.telegram.len > 0) "configured" else "not configured"});
+        std.debug.print("  Discord:   {s}\n", .{if (cfg.channels.discord.len > 0) "configured" else "not configured"});
+        std.debug.print("  Slack:     {s}\n", .{if (cfg.channels.slack.len > 0) "configured" else "not configured"});
         std.debug.print("  Webhook:   {s}\n", .{if (cfg.channels.webhook != null) "configured" else "not configured"});
         std.debug.print("  iMessage:  {s}\n", .{if (cfg.channels.imessage != null) "configured" else "not configured"});
         std.debug.print("  Matrix:    {s}\n", .{if (cfg.channels.matrix != null) "configured" else "not configured"});
@@ -340,33 +340,33 @@ fn runChannel(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
         std.debug.print("  IRC:       {s}\n", .{if (cfg.channels.irc != null) "configured" else "not configured"});
         std.debug.print("  Lark:      {s}\n", .{if (cfg.channels.lark != null) "configured" else "not configured"});
         std.debug.print("  DingTalk:  {s}\n", .{if (cfg.channels.dingtalk != null) "configured" else "not configured"});
-        std.debug.print("  Signal:    {s}\n", .{if (cfg.channels.signal != null) "configured" else "not configured"});
+        std.debug.print("  Signal:    {s}\n", .{if (cfg.channels.signal.len > 0) "configured" else "not configured"});
         std.debug.print("  Email:     {s}\n", .{if (cfg.channels.email != null) "configured" else "not configured"});
         std.debug.print("  Line:      {s}\n", .{if (cfg.channels.line != null) "configured" else "not configured"});
-        std.debug.print("  QQ:        {s}\n", .{if (cfg.channels.qq != null) "configured" else "not configured"});
-        std.debug.print("  OneBot:    {s}\n", .{if (cfg.channels.onebot != null) "configured" else "not configured"});
-        std.debug.print("  MaixCam:   {s}\n", .{if (cfg.channels.maixcam != null) "configured" else "not configured"});
+        std.debug.print("  QQ:        {s}\n", .{if (cfg.channels.qq.len > 0) "configured" else "not configured"});
+        std.debug.print("  OneBot:    {s}\n", .{if (cfg.channels.onebot.len > 0) "configured" else "not configured"});
+        std.debug.print("  MaixCam:   {s}\n", .{if (cfg.channels.maixcam.len > 0) "configured" else "not configured"});
     } else if (std.mem.eql(u8, subcmd, "start")) {
         try runChannelStart(allocator, sub_args[1..]);
     } else if (std.mem.eql(u8, subcmd, "doctor")) {
         std.debug.print("Channel health:\n", .{});
         std.debug.print("  CLI:      ok\n", .{});
-        if (cfg.channels.telegram != null) std.debug.print("  Telegram: configured (use `channel start` to verify)\n", .{});
-        if (cfg.channels.discord != null) std.debug.print("  Discord:  configured (use `channel start` to verify)\n", .{});
-        if (cfg.channels.slack != null) std.debug.print("  Slack:    configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.telegram.len > 0) std.debug.print("  Telegram: configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.discord.len > 0) std.debug.print("  Discord:  configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.slack.len > 0) std.debug.print("  Slack:    configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.webhook != null) std.debug.print("  Webhook:  configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.matrix != null) std.debug.print("  Matrix:   configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.whatsapp != null) std.debug.print("  WhatsApp: configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.irc != null) std.debug.print("  IRC:      configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.lark != null) std.debug.print("  Lark:     configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.dingtalk != null) std.debug.print("  DingTalk: configured (use `channel start` to verify)\n", .{});
-        if (cfg.channels.signal != null) std.debug.print("  Signal:   configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.signal.len > 0) std.debug.print("  Signal:   configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.imessage != null) std.debug.print("  iMessage: configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.email != null) std.debug.print("  Email:    configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.line != null) std.debug.print("  Line:     configured (use `channel start` to verify)\n", .{});
-        if (cfg.channels.qq != null) std.debug.print("  QQ:       configured (use `channel start` to verify)\n", .{});
-        if (cfg.channels.onebot != null) std.debug.print("  OneBot:   configured (use `channel start` to verify)\n", .{});
-        if (cfg.channels.maixcam != null) std.debug.print("  MaixCam:  configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.qq.len > 0) std.debug.print("  QQ:       configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.onebot.len > 0) std.debug.print("  OneBot:   configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.maixcam.len > 0) std.debug.print("  MaixCam:  configured (use `channel start` to verify)\n", .{});
     } else if (std.mem.eql(u8, subcmd, "add")) {
         if (sub_args.len < 2) {
             std.debug.print("Usage: nullclaw channel add <type>\n", .{});
@@ -712,11 +712,11 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
     defer config.deinit();
 
     // Check which channels are configured
-    const has_any = config.channels.telegram != null or
-        config.channels.signal != null or
-        config.channels.discord != null or
-        config.channels.qq != null or
-        config.channels.onebot != null;
+    const has_any = config.channels.telegram.len > 0 or
+        config.channels.signal.len > 0 or
+        config.channels.discord.len > 0 or
+        config.channels.qq.len > 0 or
+        config.channels.onebot.len > 0;
 
     if (!has_any) {
         std.debug.print("No messaging channel configured. Add to config.json:\n", .{});
@@ -736,14 +736,14 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
 
         // Telegram and Signal keep existing dedicated runners
         if (std.mem.eql(u8, ch_name, "telegram")) {
-            if (config.channels.telegram) |tg_config| {
+            if (config.channels.telegramPrimary()) |tg_config| {
                 return runTelegramChannel(allocator, args[1..], config, tg_config);
             }
             std.debug.print("Telegram channel is not configured.\n", .{});
             std.process.exit(1);
         }
         if (std.mem.eql(u8, ch_name, "signal")) {
-            if (config.channels.signal) |sig_config| {
+            if (config.channels.signalPrimary()) |sig_config| {
                 return runSignalChannel(allocator, args[1..], &config, sig_config);
             }
             std.debug.print("Signal channel is not configured.\n", .{});
@@ -755,15 +755,15 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
     }
 
     // No channel specified -- start first available
-    if (config.channels.telegram) |tg_config| {
+    if (config.channels.telegramPrimary()) |tg_config| {
         return runTelegramChannel(allocator, args, config, tg_config);
     }
-    if (config.channels.signal) |sig_config| {
+    if (config.channels.signalPrimary()) |sig_config| {
         return runSignalChannel(allocator, args, &config, sig_config);
     }
-    if (config.channels.discord != null) return runGatewayChannel(allocator, &config, "discord");
-    if (config.channels.qq != null) return runGatewayChannel(allocator, &config, "qq");
-    if (config.channels.onebot != null) return runGatewayChannel(allocator, &config, "onebot");
+    if (config.channels.discord.len > 0) return runGatewayChannel(allocator, &config, "discord");
+    if (config.channels.qq.len > 0) return runGatewayChannel(allocator, &config, "qq");
+    if (config.channels.onebot.len > 0) return runGatewayChannel(allocator, &config, "onebot");
 }
 
 /// Start a single gateway-loop channel (discord, qq, onebot) using ChannelManager.

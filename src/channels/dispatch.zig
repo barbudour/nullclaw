@@ -146,7 +146,7 @@ pub fn runOutboundDispatcher(
         defer msg.deinit(allocator);
 
         if (registry.findByName(msg.channel)) |channel| {
-            channel.send(msg.chat_id, msg.content) catch {
+            channel.send(msg.chat_id, msg.content, msg.media) catch {
                 _ = stats.errors.fetchAdd(1, .monotonic);
                 continue;
             };
@@ -339,7 +339,7 @@ const MockChannel = struct {
 
     fn mockStart(_: *anyopaque) anyerror!void {}
     fn mockStop(_: *anyopaque) void {}
-    fn mockSend(ctx: *anyopaque, _: []const u8, _: []const u8) anyerror!void {
+    fn mockSend(ctx: *anyopaque, _: []const u8, _: []const u8, _: []const []const u8) anyerror!void {
         const self: *MockChannel = @ptrCast(@alignCast(ctx));
         if (self.should_fail) return error.SendFailed;
         _ = self.sent_count.fetchAdd(1, .monotonic);

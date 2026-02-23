@@ -84,22 +84,22 @@ pub fn run(allocator: std.mem.Allocator) !void {
     // Channels
     try w.print("Channels:\n", .{});
     try w.print("  CLI:       always\n", .{});
-    try w.print("  Telegram:  {s}\n", .{if (cfg.channels.telegram != null) "configured" else "not configured"});
-    try w.print("  Discord:   {s}\n", .{if (cfg.channels.discord != null) "configured" else "not configured"});
-    try w.print("  Slack:     {s}\n", .{if (cfg.channels.slack != null) "configured" else "not configured"});
+    try w.print("  Telegram:  {s}\n", .{if (cfg.channels.telegram.len > 0) "configured" else "not configured"});
+    try w.print("  Discord:   {s}\n", .{if (cfg.channels.discord.len > 0) "configured" else "not configured"});
+    try w.print("  Slack:     {s}\n", .{if (cfg.channels.slack.len > 0) "configured" else "not configured"});
     try w.print("  Webhook:   {s}\n", .{if (cfg.channels.webhook != null) "configured" else "not configured"});
     try w.print("  Matrix:    {s}\n", .{if (cfg.channels.matrix != null) "configured" else "not configured"});
     try w.print("  IRC:       {s}\n", .{if (cfg.channels.irc != null) "configured" else "not configured"});
-    try w.print("  Signal:    {s}\n", .{if (cfg.channels.signal != null) "configured" else "not configured"});
+    try w.print("  Signal:    {s}\n", .{if (cfg.channels.signal.len > 0) "configured" else "not configured"});
     try w.print("  iMessage:  {s}\n", .{if (cfg.channels.imessage != null) "configured" else "not configured"});
     try w.print("  WhatsApp:  {s}\n", .{if (cfg.channels.whatsapp != null) "configured" else "not configured"});
     try w.print("  Lark:      {s}\n", .{if (cfg.channels.lark != null) "configured" else "not configured"});
     try w.print("  DingTalk:  {s}\n", .{if (cfg.channels.dingtalk != null) "configured" else "not configured"});
     try w.print("  Email:     {s}\n", .{if (cfg.channels.email != null) "configured" else "not configured"});
     try w.print("  Line:      {s}\n", .{if (cfg.channels.line != null) "configured" else "not configured"});
-    try w.print("  QQ:        {s}\n", .{if (cfg.channels.qq != null) "configured" else "not configured"});
-    try w.print("  OneBot:    {s}\n", .{if (cfg.channels.onebot != null) "configured" else "not configured"});
-    try w.print("  MaixCam:   {s}\n", .{if (cfg.channels.maixcam != null) "configured" else "not configured"});
+    try w.print("  QQ:        {s}\n", .{if (cfg.channels.qq.len > 0) "configured" else "not configured"});
+    try w.print("  OneBot:    {s}\n", .{if (cfg.channels.onebot.len > 0) "configured" else "not configured"});
+    try w.print("  MaixCam:   {s}\n", .{if (cfg.channels.maixcam.len > 0) "configured" else "not configured"});
 
     try w.flush();
 }

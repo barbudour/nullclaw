@@ -155,19 +155,18 @@ pub const ChannelRuntime = struct {
 /// Thread-entry function for the Telegram polling loop.
 /// Mirrors main.zig:793-866 but checks `loop_state.stop_requested` and
 /// `daemon.isShutdownRequested()` for graceful shutdown.
+///
+/// `tg_ptr` is the channel instance owned by the supervisor (ChannelManager).
+/// The polling loop uses it directly instead of creating a second
+/// TelegramChannel, so health checks and polling operate on the same object.
 pub fn runTelegramLoop(
     allocator: std.mem.Allocator,
     config: *const Config,
     runtime: *ChannelRuntime,
     loop_state: *TelegramLoopState,
+    tg_ptr: *telegram.TelegramChannel,
 ) void {
-    const telegram_config = config.channels.telegram orelse return;
-
-    // Heap-alloc TelegramChannel for vtable pointer stability
-    const tg_ptr = allocator.create(telegram.TelegramChannel) catch return;
-    defer allocator.destroy(tg_ptr);
-    tg_ptr.* = telegram.TelegramChannel.init(allocator, telegram_config.bot_token, telegram_config.allow_from, telegram_config.group_allow_from, telegram_config.group_policy);
-    tg_ptr.proxy = telegram_config.proxy;
+    const telegram_config = config.channels.telegramPrimary() orelse return;
 
     // Set up transcription — key comes from providers.{audio_media.provider}
     const trans = config.audio_media;
@@ -233,6 +232,7 @@ pub fn runTelegramLoop(
                     .account_id = telegram_config.account_id,
                     .peer = .{ .kind = if (msg.is_group) .group else .direct, .id = msg.sender },
                 }, config.agent_bindings, config.agents) catch break :blk std.fmt.bufPrint(&key_buf, "telegram:{s}", .{msg.sender}) catch msg.sender;
+                allocator.free(route.main_session_key);
                 routed_session_key = route.session_key;
                 break :blk route.session_key;
             };
@@ -313,7 +313,7 @@ pub fn runSignalLoop(
     runtime: *ChannelRuntime,
     loop_state: *SignalLoopState,
 ) void {
-    const signal_config = config.channels.signal orelse return;
+    const signal_config = config.channels.signalPrimary() orelse return;
 
     // Env overrides for Signal
     const env_http_url = std.process.getEnvVarOwned(allocator, "SIGNAL_HTTP_URL") catch null;
@@ -374,6 +374,7 @@ pub fn runSignalLoop(
                     }) catch msg.sender
                 else
                     std.fmt.bufPrint(&key_buf, "signal:{s}", .{msg.sender}) catch msg.sender;
+                allocator.free(route.main_session_key);
                 routed_session_key = route.session_key;
                 break :blk route.session_key;
             };

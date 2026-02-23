@@ -924,106 +924,151 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                 }
             }.call;
 
-            // Telegram
+            // Helper: get all accounts sorted alphabetically by ID.
+            // resolveDefaultAccountId picks "default" if present, else first sorted.
+            const getAllAccounts = struct {
+                fn call(alloc: std.mem.Allocator, obj: std.json.ObjectMap) ![]const SelectedAccount {
+                    const accts_val = obj.get("accounts") orelse return &.{};
+                    if (accts_val != .object) return &.{};
+                    const accts = accts_val.object;
+
+                    var list: std.ArrayListUnmanaged(SelectedAccount) = .empty;
+                    var it = accts.iterator();
+                    while (it.next()) |entry| {
+                        if (entry.value_ptr.* == .object) {
+                            try list.append(alloc, .{
+                                .id = entry.key_ptr.*,
+                                .obj = entry.value_ptr.object,
+                            });
+                        }
+                    }
+                    // Sort alphabetically by account ID
+                    if (list.items.len > 1) {
+                        std.mem.sort(SelectedAccount, list.items, {}, struct {
+                            fn cmp(_: void, a: SelectedAccount, b: SelectedAccount) bool {
+                                return std.mem.order(u8, a.id, b.id) == .lt;
+                            }
+                        }.cmp);
+                    }
+                    return try list.toOwnedSlice(alloc);
+                }
+            }.call;
+
+            // Telegram (multi-account)
             if (ch.object.get("telegram")) |tg| {
                 if (tg == .object) {
-                    if (getFirstAccount(tg.object)) |acc_entry| {
-                        const acc = acc_entry.obj;
-                        if (acc.get("bot_token")) |tok| {
-                            if (tok == .string) {
-                                self.channels.telegram = .{
-                                    .account_id = try self.allocator.dupe(u8, acc_entry.id),
-                                    .bot_token = try self.allocator.dupe(u8, tok.string),
-                                };
-                            }
-                        }
-                        if (self.channels.telegram) |*tg_cfg| {
+                    const all = try getAllAccounts(self.allocator, tg.object);
+                    defer if (all.len > 0) self.allocator.free(all);
+                    if (all.len > 0) {
+                        var list: std.ArrayListUnmanaged(types.TelegramConfig) = .empty;
+                        for (all) |acc_entry| {
+                            const acc = acc_entry.obj;
+                            const tok = acc.get("bot_token") orelse continue;
+                            if (tok != .string) continue;
+                            var cfg: types.TelegramConfig = .{
+                                .account_id = try self.allocator.dupe(u8, acc_entry.id),
+                                .bot_token = try self.allocator.dupe(u8, tok.string),
+                            };
                             if (acc.get("allow_from")) |v| {
-                                if (v == .array) tg_cfg.allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.allow_from = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("reply_in_private")) |v| {
-                                if (v == .bool) tg_cfg.reply_in_private = v.bool;
+                                if (v == .bool) cfg.reply_in_private = v.bool;
                             }
                             if (acc.get("proxy")) |v| {
-                                if (v == .string) tg_cfg.proxy = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.proxy = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("group_allow_from")) |v| {
-                                if (v == .array) tg_cfg.group_allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.group_allow_from = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("group_policy")) |v| {
-                                if (v == .string) tg_cfg.group_policy = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.group_policy = try self.allocator.dupe(u8, v.string);
                             }
+                            try list.append(self.allocator, cfg);
+                        }
+                        if (list.items.len > 0) {
+                            self.channels.telegram = try list.toOwnedSlice(self.allocator);
                         }
                     }
                 }
             }
 
-            // Discord
+            // Discord (multi-account)
             if (ch.object.get("discord")) |disc| {
                 if (disc == .object) {
-                    if (getFirstAccount(disc.object)) |acc_entry| {
-                        const acc = acc_entry.obj;
-                        if (acc.get("token")) |tok| {
-                            if (tok == .string) {
-                                self.channels.discord = .{
-                                    .account_id = try self.allocator.dupe(u8, acc_entry.id),
-                                    .token = try self.allocator.dupe(u8, tok.string),
-                                };
-                            }
-                        }
-                        if (self.channels.discord) |*dc| {
+                    const all = try getAllAccounts(self.allocator, disc.object);
+                    defer if (all.len > 0) self.allocator.free(all);
+                    if (all.len > 0) {
+                        var list: std.ArrayListUnmanaged(types.DiscordConfig) = .empty;
+                        for (all) |acc_entry| {
+                            const acc = acc_entry.obj;
+                            const tok = acc.get("token") orelse continue;
+                            if (tok != .string) continue;
+                            var cfg: types.DiscordConfig = .{
+                                .account_id = try self.allocator.dupe(u8, acc_entry.id),
+                                .token = try self.allocator.dupe(u8, tok.string),
+                            };
                             if (acc.get("guild_id")) |v| {
-                                if (v == .string) dc.guild_id = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.guild_id = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("allow_from")) |v| {
-                                if (v == .array) dc.allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.allow_from = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("allow_bots")) |v| {
-                                if (v == .bool) dc.allow_bots = v.bool;
+                                if (v == .bool) cfg.allow_bots = v.bool;
                             }
                             if (acc.get("require_mention")) |v| {
-                                if (v == .bool) dc.require_mention = v.bool;
+                                if (v == .bool) cfg.require_mention = v.bool;
                             }
                             if (acc.get("mention_only")) |v| {
-                                if (v == .bool) dc.require_mention = v.bool;
+                                if (v == .bool) cfg.require_mention = v.bool;
                             }
                             if (acc.get("intents")) |v| {
-                                if (v == .integer) dc.intents = @intCast(v.integer);
+                                if (v == .integer) cfg.intents = @intCast(v.integer);
                             }
+                            try list.append(self.allocator, cfg);
+                        }
+                        if (list.items.len > 0) {
+                            self.channels.discord = try list.toOwnedSlice(self.allocator);
                         }
                     }
                 }
             }
 
-            // Slack
+            // Slack (multi-account)
             if (ch.object.get("slack")) |sl| {
                 if (sl == .object) {
-                    if (getFirstAccount(sl.object)) |acc_entry| {
-                        const acc = acc_entry.obj;
-                        if (acc.get("bot_token")) |tok| {
-                            if (tok == .string) {
-                                self.channels.slack = .{
-                                    .account_id = try self.allocator.dupe(u8, acc_entry.id),
-                                    .bot_token = try self.allocator.dupe(u8, tok.string),
-                                };
-                            }
-                        }
-                        if (self.channels.slack) |*sc| {
+                    const all = try getAllAccounts(self.allocator, sl.object);
+                    defer if (all.len > 0) self.allocator.free(all);
+                    if (all.len > 0) {
+                        var list: std.ArrayListUnmanaged(types.SlackConfig) = .empty;
+                        for (all) |acc_entry| {
+                            const acc = acc_entry.obj;
+                            const tok = acc.get("bot_token") orelse continue;
+                            if (tok != .string) continue;
+                            var cfg: types.SlackConfig = .{
+                                .account_id = try self.allocator.dupe(u8, acc_entry.id),
+                                .bot_token = try self.allocator.dupe(u8, tok.string),
+                            };
                             if (acc.get("app_token")) |v| {
-                                if (v == .string) sc.app_token = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.app_token = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("channel_id")) |v| {
-                                if (v == .string) sc.channel_id = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.channel_id = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("allow_from")) |v| {
-                                if (v == .array) sc.allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.allow_from = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("dm_policy")) |v| {
-                                if (v == .string) sc.dm_policy = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.dm_policy = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("group_policy")) |v| {
-                                if (v == .string) sc.group_policy = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.group_policy = try self.allocator.dupe(u8, v.string);
                             }
+                            try list.append(self.allocator, cfg);
+                        }
+                        if (list.items.len > 0) {
+                            self.channels.slack = try list.toOwnedSlice(self.allocator);
                         }
                     }
                 }
@@ -1211,35 +1256,42 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                 }
             }
 
-            // Signal
+            // Signal (multi-account)
             if (ch.object.get("signal")) |sg| {
                 if (sg == .object) {
-                    if (getFirstAccount(sg.object)) |acc_entry| sg_blk: {
-                        const acc = acc_entry.obj;
-                        const url = acc.get("http_url") orelse break :sg_blk;
-                        const acct = acc.get("account") orelse break :sg_blk;
-                        if (url != .string or acct != .string) break :sg_blk;
-                        self.channels.signal = .{
-                            .account_id = try self.allocator.dupe(u8, acc_entry.id),
-                            .http_url = try self.allocator.dupe(u8, url.string),
-                            .account = try self.allocator.dupe(u8, acct.string),
-                        };
-                        if (self.channels.signal) |*sc| {
+                    const all = try getAllAccounts(self.allocator, sg.object);
+                    defer if (all.len > 0) self.allocator.free(all);
+                    if (all.len > 0) {
+                        var list: std.ArrayListUnmanaged(types.SignalConfig) = .empty;
+                        for (all) |acc_entry| {
+                            const acc = acc_entry.obj;
+                            const url = acc.get("http_url") orelse continue;
+                            const acct = acc.get("account") orelse continue;
+                            if (url != .string or acct != .string) continue;
+                            var cfg: types.SignalConfig = .{
+                                .account_id = try self.allocator.dupe(u8, acc_entry.id),
+                                .http_url = try self.allocator.dupe(u8, url.string),
+                                .account = try self.allocator.dupe(u8, acct.string),
+                            };
                             if (acc.get("allow_from")) |v| {
-                                if (v == .array) sc.allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.allow_from = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("group_allow_from")) |v| {
-                                if (v == .array) sc.group_allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.group_allow_from = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("group_policy")) |v| {
-                                if (v == .string) sc.group_policy = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.group_policy = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("ignore_attachments")) |v| {
-                                if (v == .bool) sc.ignore_attachments = v.bool;
+                                if (v == .bool) cfg.ignore_attachments = v.bool;
                             }
                             if (acc.get("ignore_stories")) |v| {
-                                if (v == .bool) sc.ignore_stories = v.bool;
+                                if (v == .bool) cfg.ignore_stories = v.bool;
                             }
+                            try list.append(self.allocator, cfg);
+                        }
+                        if (list.items.len > 0) {
+                            self.channels.signal = try list.toOwnedSlice(self.allocator);
                         }
                     }
                 }
@@ -1334,89 +1386,158 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                 }
             }
 
-            // QQ
+            // QQ (multi-account)
             if (ch.object.get("qq")) |qq| {
                 if (qq == .object) {
-                    if (getFirstAccount(qq.object)) |acc_entry| {
-                        const acc = acc_entry.obj;
-                        self.channels.qq = .{};
-                        if (self.channels.qq) |*qc| {
-                            qc.account_id = try self.allocator.dupe(u8, acc_entry.id);
+                    const all = try getAllAccounts(self.allocator, qq.object);
+                    defer if (all.len > 0) self.allocator.free(all);
+                    if (all.len > 0) {
+                        var list: std.ArrayListUnmanaged(types.QQConfig) = .empty;
+                        for (all) |acc_entry| {
+                            const acc = acc_entry.obj;
+                            var cfg: types.QQConfig = .{
+                                .account_id = try self.allocator.dupe(u8, acc_entry.id),
+                            };
                             if (acc.get("app_id")) |v| {
-                                if (v == .string) qc.app_id = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.app_id = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("app_secret")) |v| {
-                                if (v == .string) qc.app_secret = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.app_secret = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("bot_token")) |v| {
-                                if (v == .string) qc.bot_token = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.bot_token = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("sandbox")) |v| {
-                                if (v == .bool) qc.sandbox = v.bool;
+                                if (v == .bool) cfg.sandbox = v.bool;
                             }
                             if (acc.get("group_policy")) |v| {
                                 if (v == .string) {
-                                    if (std.mem.eql(u8, v.string, "allowlist")) qc.group_policy = .allowlist;
+                                    if (std.mem.eql(u8, v.string, "allowlist")) cfg.group_policy = .allowlist;
                                 }
                             }
                             if (acc.get("allowed_groups")) |v| {
-                                if (v == .array) qc.allowed_groups = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.allowed_groups = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("allow_from")) |v| {
-                                if (v == .array) qc.allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.allow_from = try parseStringArray(self.allocator, v.array);
                             }
+                            try list.append(self.allocator, cfg);
+                        }
+                        if (list.items.len > 0) {
+                            self.channels.qq = try list.toOwnedSlice(self.allocator);
                         }
                     }
                 }
             }
 
-            // OneBot
+            // OneBot (multi-account)
             if (ch.object.get("onebot")) |ob| {
                 if (ob == .object) {
-                    if (getFirstAccount(ob.object)) |acc_entry| {
-                        const acc = acc_entry.obj;
-                        self.channels.onebot = .{};
-                        if (self.channels.onebot) |*oc| {
-                            oc.account_id = try self.allocator.dupe(u8, acc_entry.id);
+                    const all = try getAllAccounts(self.allocator, ob.object);
+                    defer if (all.len > 0) self.allocator.free(all);
+                    if (all.len > 0) {
+                        var list: std.ArrayListUnmanaged(types.OneBotConfig) = .empty;
+                        for (all) |acc_entry| {
+                            const acc = acc_entry.obj;
+                            var cfg: types.OneBotConfig = .{
+                                .account_id = try self.allocator.dupe(u8, acc_entry.id),
+                            };
                             if (acc.get("url")) |v| {
-                                if (v == .string) oc.url = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.url = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("access_token")) |v| {
-                                if (v == .string) oc.access_token = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.access_token = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("group_trigger_prefix")) |v| {
-                                if (v == .string) oc.group_trigger_prefix = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.group_trigger_prefix = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("allow_from")) |v| {
-                                if (v == .array) oc.allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.allow_from = try parseStringArray(self.allocator, v.array);
                             }
+                            try list.append(self.allocator, cfg);
+                        }
+                        if (list.items.len > 0) {
+                            self.channels.onebot = try list.toOwnedSlice(self.allocator);
                         }
                     }
                 }
             }
 
-            // MaixCam
+            // MaixCam (multi-account)
             if (ch.object.get("maixcam")) |mx| {
                 if (mx == .object) {
-                    if (getFirstAccount(mx.object)) |acc_entry| {
-                        const acc = acc_entry.obj;
-                        self.channels.maixcam = .{};
-                        if (self.channels.maixcam) |*mc| {
-                            mc.account_id = try self.allocator.dupe(u8, acc_entry.id);
+                    const all = try getAllAccounts(self.allocator, mx.object);
+                    defer if (all.len > 0) self.allocator.free(all);
+                    if (all.len > 0) {
+                        var list: std.ArrayListUnmanaged(types.MaixCamConfig) = .empty;
+                        for (all) |acc_entry| {
+                            const acc = acc_entry.obj;
+                            var cfg: types.MaixCamConfig = .{
+                                .account_id = try self.allocator.dupe(u8, acc_entry.id),
+                            };
                             if (acc.get("port")) |v| {
-                                if (v == .integer) mc.port = @intCast(v.integer);
+                                if (v == .integer) cfg.port = @intCast(v.integer);
                             }
                             if (acc.get("host")) |v| {
-                                if (v == .string) mc.host = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.host = try self.allocator.dupe(u8, v.string);
                             }
                             if (acc.get("allow_from")) |v| {
-                                if (v == .array) mc.allow_from = try parseStringArray(self.allocator, v.array);
+                                if (v == .array) cfg.allow_from = try parseStringArray(self.allocator, v.array);
                             }
                             if (acc.get("name")) |v| {
-                                if (v == .string) mc.name = try self.allocator.dupe(u8, v.string);
+                                if (v == .string) cfg.name = try self.allocator.dupe(u8, v.string);
                             }
+                            try list.append(self.allocator, cfg);
+                        }
+                        if (list.items.len > 0) {
+                            self.channels.maixcam = try list.toOwnedSlice(self.allocator);
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // Session config
+    if (root.get("session")) |sess| {
+        if (sess == .object) {
+            if (sess.object.get("dm_scope")) |v| {
+                if (v == .string) {
+                    if (std.mem.eql(u8, v.string, "main")) {
+                        self.session.dm_scope = .main;
+                    } else if (std.mem.eql(u8, v.string, "per_peer")) {
+                        self.session.dm_scope = .per_peer;
+                    } else if (std.mem.eql(u8, v.string, "per_channel_peer")) {
+                        self.session.dm_scope = .per_channel_peer;
+                    } else if (std.mem.eql(u8, v.string, "per_account_channel_peer")) {
+                        self.session.dm_scope = .per_account_channel_peer;
+                    }
+                }
+            }
+            if (sess.object.get("idle_minutes")) |v| {
+                if (v == .integer) self.session.idle_minutes = @intCast(v.integer);
+            }
+            if (sess.object.get("typing_interval_secs")) |v| {
+                if (v == .integer) self.session.typing_interval_secs = @intCast(v.integer);
+            }
+            if (sess.object.get("identity_links")) |links| {
+                if (links == .array) {
+                    var link_list: std.ArrayListUnmanaged(types.IdentityLink) = .empty;
+                    for (links.array.items) |item| {
+                        if (item != .object) continue;
+                        const canonical = item.object.get("canonical") orelse continue;
+                        if (canonical != .string) continue;
+                        var link: types.IdentityLink = .{
+                            .canonical = try self.allocator.dupe(u8, canonical.string),
+                        };
+                        if (item.object.get("peers")) |peers| {
+                            if (peers == .array) {
+                                link.peers = try parseStringArray(self.allocator, peers.array);
+                            }
+                        }
+                        try link_list.append(self.allocator, link);
+                    }
+                    self.session.identity_links = try link_list.toOwnedSlice(self.allocator);
                 }
             }
         }

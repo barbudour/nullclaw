@@ -119,21 +119,21 @@ pub fn computeBackoff(current_backoff: u64, max_backoff: u64) u64 {
 
 /// Check if any real-time channels are configured.
 pub fn hasSupervisedChannels(config: *const Config) bool {
-    return config.channels.telegram != null or
-        config.channels.discord != null or
-        config.channels.slack != null or
+    return config.channels.telegram.len > 0 or
+        config.channels.discord.len > 0 or
+        config.channels.slack.len > 0 or
         config.channels.imessage != null or
         config.channels.matrix != null or
         config.channels.whatsapp != null or
-        config.channels.signal != null or
+        config.channels.signal.len > 0 or
         config.channels.irc != null or
         config.channels.lark != null or
         config.channels.dingtalk != null or
         config.channels.email != null or
         config.channels.line != null or
-        config.channels.qq != null or
-        config.channels.onebot != null or
-        config.channels.maixcam != null;
+        config.channels.qq.len > 0 or
+        config.channels.onebot.len > 0 or
+        config.channels.maixcam.len > 0;
 }
 
 /// Shutdown signal — set to true to stop the daemon.
@@ -150,9 +150,9 @@ pub fn isShutdownRequested() bool {
 }
 
 /// Gateway thread entry point.
-fn gatewayThread(allocator: std.mem.Allocator, config: *const Config, host: []const u8, port: u16, state: *DaemonState) void {
+fn gatewayThread(allocator: std.mem.Allocator, config: *const Config, host: []const u8, port: u16, state: *DaemonState, event_bus: *bus_mod.Bus) void {
     const gateway = @import("gateway.zig");
-    gateway.run(allocator, host, port, config) catch |err| {
+    gateway.run(allocator, host, port, config, event_bus) catch |err| {
         state.markError("gateway", @errorName(err));
         health.markComponentError("gateway", @errorName(err));
         return;
@@ -270,7 +270,7 @@ fn resolveInboundRouteSessionKey(
     var is_dm_meta: ?bool = null;
     var is_group_meta: ?bool = null;
     var channel_id_meta: ?[]const u8 = null;
-    const maixcam_name = if (config.channels.maixcam) |mc| mc.name else "maixcam";
+    const maixcam_name = if (config.channels.maixcamPrimary()) |mc| mc.name else "maixcam";
 
     var parsed_meta: ?std.json.Parsed(std.json.Value) = null;
     defer if (parsed_meta) |*pm| pm.deinit();
@@ -302,13 +302,13 @@ fn resolveInboundRouteSessionKey(
 
     if (!has_account_id_meta) {
         if (std.mem.eql(u8, msg.channel, "discord")) {
-            if (config.channels.discord) |dc| account_id = dc.account_id;
+            if (config.channels.discordPrimary()) |dc| account_id = dc.account_id;
         } else if (std.mem.eql(u8, msg.channel, "qq")) {
-            if (config.channels.qq) |qc| account_id = qc.account_id;
+            if (config.channels.qqPrimary()) |qc| account_id = qc.account_id;
         } else if (std.mem.eql(u8, msg.channel, "onebot")) {
-            if (config.channels.onebot) |oc| account_id = oc.account_id;
+            if (config.channels.onebotPrimary()) |oc| account_id = oc.account_id;
         } else if (std.mem.eql(u8, msg.channel, "maixcam") or std.mem.eql(u8, msg.channel, maixcam_name)) {
-            if (config.channels.maixcam) |mc| account_id = mc.account_id;
+            if (config.channels.maixcamPrimary()) |mc| account_id = mc.account_id;
         }
     }
 
@@ -349,6 +349,7 @@ fn resolveInboundRouteSessionKey(
         .peer = peer,
         .guild_id = guild_id,
     }, config.agent_bindings, config.agents) catch return null;
+    allocator.free(route.main_session_key);
     return route.session_key;
 }
 
@@ -358,6 +359,8 @@ fn inboundDispatcherThread(
     runtime: *channel_loop.ChannelRuntime,
     state: *DaemonState,
 ) void {
+    var evict_counter: u32 = 0;
+
     while (event_bus.consumeInbound()) |msg| {
         defer msg.deinit(allocator);
 
@@ -367,6 +370,18 @@ fn inboundDispatcherThread(
 
         const reply = runtime.session_mgr.processMessage(session_key, msg.content) catch |err| {
             log.warn("inbound dispatch process failed: {}", .{err});
+
+            // Send user-visible error reply back to the originating channel
+            const err_msg: []const u8 = switch (err) {
+                error.CurlFailed, error.CurlReadError, error.CurlWaitError => "Network error. Please try again.",
+                error.ProviderDoesNotSupportVision => "The current provider does not support image input.",
+                error.OutOfMemory => "Out of memory.",
+                else => "An error occurred. Try again.",
+            };
+            const err_out = bus_mod.makeOutbound(allocator, msg.channel, msg.chat_id, err_msg) catch continue;
+            event_bus.publishOutbound(err_out) catch {
+                err_out.deinit(allocator);
+            };
             continue;
         };
         defer allocator.free(reply);
@@ -385,6 +400,13 @@ fn inboundDispatcherThread(
 
         state.markRunning("inbound_dispatcher");
         health.markComponentOk("inbound_dispatcher");
+
+        // Periodic session eviction for bus-based channels
+        evict_counter += 1;
+        if (evict_counter >= 100) {
+            evict_counter = 0;
+            _ = runtime.session_mgr.evictIdle(runtime.config.agent.session_idle_timeout_secs);
+        }
     }
 }
 
@@ -431,9 +453,12 @@ pub fn run(allocator: std.mem.Allocator, config: *const Config, host: []const u8
         try stdout.print("Warning: could not write state file: {}\n", .{err});
     };
 
+    // Event bus (created before gateway+scheduler so all threads can publish)
+    var event_bus = bus_mod.Bus.init();
+
     // Spawn gateway thread
     state.markRunning("gateway");
-    const gw_thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, gatewayThread, .{ allocator, config, host, port, &state }) catch |err| {
+    const gw_thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, gatewayThread, .{ allocator, config, host, port, &state, &event_bus }) catch |err| {
         state.markError("gateway", @errorName(err));
         try stdout.print("Failed to spawn gateway: {}\n", .{err});
         return err;
@@ -450,9 +475,6 @@ pub fn run(allocator: std.mem.Allocator, config: *const Config, host: []const u8
             stdout.print("Warning: heartbeat thread failed: {}\n", .{err}) catch {};
         }
     }
-
-    // Event bus (created before scheduler so cron jobs can deliver via bus)
-    var event_bus = bus_mod.Bus.init();
 
     // Spawn scheduler thread
     var sched_thread: ?std.Thread = null;
@@ -611,9 +633,9 @@ test "resolveInboundRouteSessionKey falls back to configured account_id" {
         .allocator = allocator,
         .agent_bindings = &bindings,
         .channels = .{
-            .onebot = .{
+            .onebot = &[_]@import("config_types.zig").OneBotConfig{.{
                 .account_id = "onebot-main",
-            },
+            }},
         },
     };
     const msg = bus_mod.InboundMessage{
@@ -648,10 +670,10 @@ test "resolveInboundRouteSessionKey supports custom maixcam channel name" {
         .allocator = allocator,
         .agent_bindings = &bindings,
         .channels = .{
-            .maixcam = .{
+            .maixcam = &[_]@import("config_types.zig").MaixCamConfig{.{
                 .name = "vision-cam",
                 .account_id = "cam-main",
-            },
+            }},
         },
     };
     const msg = bus_mod.InboundMessage{

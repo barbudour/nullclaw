@@ -58,7 +58,7 @@ pub const Channel = struct {
         /// Stop the channel (disconnect, clean up).
         stop: *const fn (ptr: *anyopaque) void,
         /// Send a message to a target (user, channel, room, etc.).
-        send: *const fn (ptr: *anyopaque, target: []const u8, message: []const u8) anyerror!void,
+        send: *const fn (ptr: *anyopaque, target: []const u8, message: []const u8, media: []const []const u8) anyerror!void,
         /// Return the channel name (e.g. "telegram", "discord").
         name: *const fn (ptr: *anyopaque) []const u8,
         /// Health check — return true if the channel is operational.
@@ -73,8 +73,8 @@ pub const Channel = struct {
         self.vtable.stop(self.ptr);
     }
 
-    pub fn send(self: Channel, target: []const u8, message: []const u8) !void {
-        return self.vtable.send(self.ptr, target, message);
+    pub fn send(self: Channel, target: []const u8, message: []const u8, media: []const []const u8) !void {
+        return self.vtable.send(self.ptr, target, message, media);
     }
 
     pub fn name(self: Channel) []const u8 {

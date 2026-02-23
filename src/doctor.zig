@@ -259,9 +259,9 @@ pub fn checkConfigSemantics(
 
     // Channels: at least one configured
     const ch = &config.channels;
-    const has_channel = ch.telegram != null or
-        ch.discord != null or
-        ch.slack != null or
+    const has_channel = ch.telegram.len > 0 or
+        ch.discord.len > 0 or
+        ch.slack.len > 0 or
         ch.webhook != null or
         ch.imessage != null or
         ch.matrix != null or
@@ -269,12 +269,12 @@ pub fn checkConfigSemantics(
         ch.irc != null or
         ch.lark != null or
         ch.dingtalk != null or
-        ch.signal != null or
+        ch.signal.len > 0 or
         ch.email != null or
         ch.line != null or
-        ch.qq != null or
-        ch.onebot != null or
-        ch.maixcam != null;
+        ch.qq.len > 0 or
+        ch.onebot.len > 0 or
+        ch.maixcam.len > 0;
 
     if (has_channel) {
         try items.append(allocator, DiagItem.ok(cat, "at least one channel configured"));
@@ -662,11 +662,11 @@ fn checkChannels(allocator: std.mem.Allocator, cfg: *const Config, items: *std.A
     const cat = "channels";
     items.append(allocator, DiagItem.ok(cat, "CLI always available")) catch {};
 
-    if (cfg.channels.telegram != null)
+    if (cfg.channels.telegram.len > 0)
         items.append(allocator, DiagItem.ok(cat, "Telegram configured")) catch {};
-    if (cfg.channels.discord != null)
+    if (cfg.channels.discord.len > 0)
         items.append(allocator, DiagItem.ok(cat, "Discord configured")) catch {};
-    if (cfg.channels.slack != null)
+    if (cfg.channels.slack.len > 0)
         items.append(allocator, DiagItem.ok(cat, "Slack configured")) catch {};
     if (cfg.channels.webhook != null)
         items.append(allocator, DiagItem.ok(cat, "Webhook configured")) catch {};
@@ -674,7 +674,7 @@ fn checkChannels(allocator: std.mem.Allocator, cfg: *const Config, items: *std.A
         items.append(allocator, DiagItem.ok(cat, "Matrix configured")) catch {};
     if (cfg.channels.irc != null)
         items.append(allocator, DiagItem.ok(cat, "IRC configured")) catch {};
-    if (cfg.channels.signal != null)
+    if (cfg.channels.signal.len > 0)
         items.append(allocator, DiagItem.ok(cat, "Signal configured")) catch {};
     if (cfg.channels.imessage != null)
         items.append(allocator, DiagItem.ok(cat, "iMessage configured")) catch {};
@@ -688,11 +688,11 @@ fn checkChannels(allocator: std.mem.Allocator, cfg: *const Config, items: *std.A
         items.append(allocator, DiagItem.ok(cat, "Email configured")) catch {};
     if (cfg.channels.line != null)
         items.append(allocator, DiagItem.ok(cat, "Line configured")) catch {};
-    if (cfg.channels.qq != null)
+    if (cfg.channels.qq.len > 0)
         items.append(allocator, DiagItem.ok(cat, "QQ configured")) catch {};
-    if (cfg.channels.onebot != null)
+    if (cfg.channels.onebot.len > 0)
         items.append(allocator, DiagItem.ok(cat, "OneBot configured")) catch {};
-    if (cfg.channels.maixcam != null)
+    if (cfg.channels.maixcam.len > 0)
         items.append(allocator, DiagItem.ok(cat, "MaixCam configured")) catch {};
 }
 

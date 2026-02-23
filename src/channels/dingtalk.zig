@@ -78,7 +78,7 @@ pub const DingTalkChannel = struct {
         _ = ptr;
     }
 
-    fn vtableSend(ptr: *anyopaque, target: []const u8, message: []const u8) anyerror!void {
+    fn vtableSend(ptr: *anyopaque, target: []const u8, message: []const u8, _: []const []const u8) anyerror!void {
         const self: *DingTalkChannel = @ptrCast(@alignCast(ptr));
         try self.sendMessage(target, message);
     }

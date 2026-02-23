@@ -49,6 +49,7 @@ pub const ListenerType = enum {
 
 pub const Entry = struct {
     name: []const u8,
+    account_id: []const u8 = "default",
     channel: Channel,
     listener_type: ListenerType,
     supervised: dispatch.SupervisedChannel,
@@ -122,10 +123,14 @@ pub const ChannelManager = struct {
             errdefer self.allocator.destroy(tg_ls);
             tg_ls.* = channel_loop.TelegramLoopState.init();
 
+            // Cast the opaque vtable pointer back to the concrete TelegramChannel
+            // so the polling loop operates on the same instance as the supervisor.
+            const tg_ptr: *telegram.TelegramChannel = @ptrCast(@alignCast(entry.channel.ptr));
+
             const thread = try std.Thread.spawn(
                 .{ .stack_size = 512 * 1024 },
                 channel_loop.runTelegramLoop,
-                .{ self.allocator, self.config, rt, tg_ls },
+                .{ self.allocator, self.config, rt, tg_ls, tg_ptr },
             );
             tg_ls.thread = thread;
             entry.polling_state = .{ .telegram = tg_ls };
@@ -170,8 +175,8 @@ pub const ChannelManager = struct {
 
     /// Scan config, create channel instances, register in registry.
     pub fn collectConfiguredChannels(self: *ChannelManager) !void {
-        // Telegram
-        if (self.config.channels.telegram) |tg_cfg| {
+        // Telegram (all accounts)
+        for (self.config.channels.telegram) |tg_cfg| {
             const tg_ptr = try self.allocator.create(telegram.TelegramChannel);
             tg_ptr.* = telegram.TelegramChannel.init(
                 self.allocator,
@@ -184,14 +189,15 @@ pub const ChannelManager = struct {
             try self.registry.register(tg_ptr.channel());
             try self.entries.append(self.allocator, .{
                 .name = "telegram",
+                .account_id = tg_cfg.account_id,
                 .channel = tg_ptr.channel(),
                 .listener_type = .polling,
                 .supervised = dispatch.spawnSupervisedChannel(tg_ptr.channel(), 5),
             });
         }
 
-        // Signal
-        if (self.config.channels.signal) |sg_cfg| {
+        // Signal (all accounts)
+        for (self.config.channels.signal) |sg_cfg| {
             const sg_ptr = try self.allocator.create(signal_ch.SignalChannel);
             sg_ptr.* = signal_ch.SignalChannel.init(
                 self.allocator,
@@ -206,20 +212,22 @@ pub const ChannelManager = struct {
             try self.registry.register(sg_ptr.channel());
             try self.entries.append(self.allocator, .{
                 .name = "signal",
+                .account_id = sg_cfg.account_id,
                 .channel = sg_ptr.channel(),
                 .listener_type = .polling,
                 .supervised = dispatch.spawnSupervisedChannel(sg_ptr.channel(), 5),
             });
         }
 
-        // Discord — has its own gateway loop; use initFromConfig for full config
-        if (self.config.channels.discord) |dc_cfg| {
+        // Discord (all accounts)
+        for (self.config.channels.discord) |dc_cfg| {
             const dc_ptr = try self.allocator.create(discord.DiscordChannel);
             dc_ptr.* = discord.DiscordChannel.initFromConfig(self.allocator, dc_cfg);
             dc_ptr.bus = self.event_bus;
             try self.registry.register(dc_ptr.channel());
             try self.entries.append(self.allocator, .{
                 .name = "discord",
+                .account_id = dc_cfg.account_id,
                 .channel = dc_ptr.channel(),
                 .listener_type = .gateway_loop,
                 .supervised = dispatch.spawnSupervisedChannel(dc_ptr.channel(), 5),
@@ -227,28 +235,30 @@ pub const ChannelManager = struct {
             log.info("Discord channel configured (gateway_loop)", .{});
         }
 
-        // QQ
-        if (self.config.channels.qq) |qq_cfg| {
+        // QQ (all accounts)
+        for (self.config.channels.qq) |qq_cfg| {
             const qq_ptr = try self.allocator.create(qq.QQChannel);
             qq_ptr.* = qq.QQChannel.init(self.allocator, qq_cfg);
             if (self.event_bus) |eb| qq_ptr.setBus(eb);
             try self.registry.register(qq_ptr.channel());
             try self.entries.append(self.allocator, .{
                 .name = "qq",
+                .account_id = qq_cfg.account_id,
                 .channel = qq_ptr.channel(),
                 .listener_type = .gateway_loop,
                 .supervised = dispatch.spawnSupervisedChannel(qq_ptr.channel(), 5),
             });
         }
 
-        // OneBot
-        if (self.config.channels.onebot) |ob_cfg| {
+        // OneBot (all accounts)
+        for (self.config.channels.onebot) |ob_cfg| {
             const ob_ptr = try self.allocator.create(onebot.OneBotChannel);
             ob_ptr.* = onebot.OneBotChannel.init(self.allocator, ob_cfg);
             if (self.event_bus) |eb| ob_ptr.setBus(eb);
             try self.registry.register(ob_ptr.channel());
             try self.entries.append(self.allocator, .{
                 .name = "onebot",
+                .account_id = ob_cfg.account_id,
                 .channel = ob_ptr.channel(),
                 .listener_type = .gateway_loop,
                 .supervised = dispatch.spawnSupervisedChannel(ob_ptr.channel(), 5),
@@ -309,9 +319,8 @@ pub const ChannelManager = struct {
             });
         }
 
-        // Slack — send-only (outbound ready; inbound listener not wired yet)
-        if (self.config.channels.slack != null) {
-            const sl_cfg = self.config.channels.slack.?;
+        // Slack (all accounts) — send-only (outbound ready; inbound listener not wired yet)
+        for (self.config.channels.slack) |sl_cfg| {
             const sl_ptr = try self.allocator.create(slack.SlackChannel);
             sl_ptr.* = slack.SlackChannel.init(
                 self.allocator,
@@ -323,6 +332,7 @@ pub const ChannelManager = struct {
             try self.registry.register(sl_ptr.channel());
             try self.entries.append(self.allocator, .{
                 .name = "slack",
+                .account_id = sl_cfg.account_id,
                 .channel = sl_ptr.channel(),
                 .listener_type = .send_only,
                 .supervised = dispatch.spawnSupervisedChannel(sl_ptr.channel(), 5),
@@ -427,15 +437,15 @@ pub const ChannelManager = struct {
             });
         }
 
-        // MaixCam — send-only lifecycle (event bus wired for inbound when listener is enabled)
-        if (self.config.channels.maixcam != null) {
-            const mx_cfg = self.config.channels.maixcam.?;
+        // MaixCam (all accounts) — send-only lifecycle
+        for (self.config.channels.maixcam) |mx_cfg| {
             const mx_ptr = try self.allocator.create(maixcam.MaixCamChannel);
             mx_ptr.* = maixcam.MaixCamChannel.init(self.allocator, mx_cfg);
             mx_ptr.event_bus = self.event_bus;
             try self.registry.register(mx_ptr.channel());
             try self.entries.append(self.allocator, .{
                 .name = "maixcam",
+                .account_id = mx_cfg.account_id,
                 .channel = mx_ptr.channel(),
                 .listener_type = .send_only,
                 .supervised = dispatch.spawnSupervisedChannel(mx_ptr.channel(), 5),
@@ -521,6 +531,37 @@ pub const ChannelManager = struct {
             if (daemon.isShutdownRequested()) break;
 
             for (self.entries.items) |*entry| {
+                // Gateway-loop channels: health check + restart on failure
+                if (entry.listener_type == .gateway_loop) {
+                    const probe_ok = entry.channel.healthCheck();
+                    if (probe_ok) {
+                        health.markComponentOk(entry.name);
+                        if (entry.supervised.state != .running) entry.supervised.recordSuccess();
+                    } else {
+                        log.warn("{s} gateway health check failed", .{entry.name});
+                        health.markComponentError(entry.name, "gateway health check failed");
+                        entry.supervised.recordFailure();
+
+                        if (entry.supervised.shouldRestart()) {
+                            log.info("Restarting {s} gateway (attempt {d})", .{ entry.name, entry.supervised.restart_count });
+                            state.markError("channels", "gateway health check failed");
+                            entry.channel.stop();
+                            std.Thread.sleep(entry.supervised.currentBackoffMs() * std.time.ns_per_ms);
+                            entry.channel.start() catch |err| {
+                                log.err("Failed to restart {s} gateway: {}", .{ entry.name, err });
+                                continue;
+                            };
+                            entry.supervised.recordSuccess();
+                            state.markRunning("channels");
+                            health.markComponentOk(entry.name);
+                        } else if (entry.supervised.state == .gave_up) {
+                            state.markError("channels", "gave up after max restarts");
+                            health.markComponentError(entry.name, "gave up after max restarts");
+                        }
+                    }
+                    continue;
+                }
+
                 if (entry.listener_type != .polling) continue;
 
                 const polling_state = entry.polling_state orelse continue;

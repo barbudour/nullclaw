@@ -312,9 +312,9 @@ pub const MaixCamConfig = struct {
 
 pub const ChannelsConfig = struct {
     cli: bool = true,
-    telegram: ?TelegramConfig = null,
-    discord: ?DiscordConfig = null,
-    slack: ?SlackConfig = null,
+    telegram: []const TelegramConfig = &.{},
+    discord: []const DiscordConfig = &.{},
+    slack: []const SlackConfig = &.{},
     webhook: ?WebhookConfig = null,
     imessage: ?IMessageConfig = null,
     matrix: ?MatrixConfig = null,
@@ -322,12 +322,42 @@ pub const ChannelsConfig = struct {
     irc: ?IrcConfig = null,
     lark: ?LarkConfig = null,
     dingtalk: ?DingTalkConfig = null,
-    signal: ?SignalConfig = null,
+    signal: []const SignalConfig = &.{},
     email: ?EmailConfig = null,
     line: ?LineConfig = null,
-    qq: ?QQConfig = null,
-    onebot: ?OneBotConfig = null,
-    maixcam: ?MaixCamConfig = null,
+    qq: []const QQConfig = &.{},
+    onebot: []const OneBotConfig = &.{},
+    maixcam: []const MaixCamConfig = &.{},
+
+    /// Get primary (first) account for a channel, or null if none configured.
+    pub fn telegramPrimary(self: *const ChannelsConfig) ?TelegramConfig {
+        if (self.telegram.len > 0) return self.telegram[0];
+        return null;
+    }
+    pub fn discordPrimary(self: *const ChannelsConfig) ?DiscordConfig {
+        if (self.discord.len > 0) return self.discord[0];
+        return null;
+    }
+    pub fn slackPrimary(self: *const ChannelsConfig) ?SlackConfig {
+        if (self.slack.len > 0) return self.slack[0];
+        return null;
+    }
+    pub fn signalPrimary(self: *const ChannelsConfig) ?SignalConfig {
+        if (self.signal.len > 0) return self.signal[0];
+        return null;
+    }
+    pub fn qqPrimary(self: *const ChannelsConfig) ?QQConfig {
+        if (self.qq.len > 0) return self.qq[0];
+        return null;
+    }
+    pub fn onebotPrimary(self: *const ChannelsConfig) ?OneBotConfig {
+        if (self.onebot.len > 0) return self.onebot[0];
+        return null;
+    }
+    pub fn maixcamPrimary(self: *const ChannelsConfig) ?MaixCamConfig {
+        if (self.maixcam.len > 0) return self.maixcam[0];
+        return null;
+    }
 };
 
 // ── Memory config ───────────────────────────────────────────────
@@ -538,4 +568,29 @@ pub const ModelPricing = struct {
     model: []const u8 = "",
     input_cost_per_1k: f64 = 0.0,
     output_cost_per_1k: f64 = 0.0,
+};
+
+// ── Session Config ──────────────────────────────────────────────
+
+pub const DmScope = enum {
+    /// Single shared session for all DMs.
+    main,
+    /// One session per peer across all channels.
+    per_peer,
+    /// One session per (channel, peer) pair (default).
+    per_channel_peer,
+    /// One session per (account, channel, peer) triple.
+    per_account_channel_peer,
+};
+
+pub const IdentityLink = struct {
+    canonical: []const u8,
+    peers: []const []const u8 = &.{},
+};
+
+pub const SessionConfig = struct {
+    dm_scope: DmScope = .per_channel_peer,
+    idle_minutes: u32 = 60,
+    identity_links: []const IdentityLink = &.{},
+    typing_interval_secs: u32 = 5,
 };

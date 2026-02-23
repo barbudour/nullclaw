@@ -293,7 +293,7 @@ pub const IrcChannel = struct {
         self.disconnect();
     }
 
-    fn vtableSend(ptr: *anyopaque, target: []const u8, message: []const u8) anyerror!void {
+    fn vtableSend(ptr: *anyopaque, target: []const u8, message: []const u8, _: []const []const u8) anyerror!void {
         const self: *IrcChannel = @ptrCast(@alignCast(ptr));
         try self.sendMessage(target, message);
     }

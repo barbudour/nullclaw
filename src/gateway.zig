@@ -21,6 +21,7 @@ const observability = @import("observability.zig");
 const agent_routing = @import("agent_routing.zig");
 const PairingGuard = @import("security/pairing.zig").PairingGuard;
 const channels = @import("channels/root.zig");
+const bus_mod = @import("bus.zig");
 
 /// Maximum request body size (64KB) — prevents memory exhaustion.
 pub const MAX_BODY_SIZE: usize = 65_536;
@@ -224,6 +225,7 @@ pub const GatewayState = struct {
     lark_account_id: []const u8 = "default",
     lark_allow_from: []const []const u8 = &.{},
     pairing_guard: ?PairingGuard,
+    event_bus: ?*bus_mod.Bus = null,
 
     pub fn init(allocator: std.mem.Allocator) GatewayState {
         return initWithVerifyToken(allocator, "");
@@ -250,6 +252,34 @@ pub const GatewayState = struct {
         }
     }
 };
+
+/// Publish an inbound message to the event bus. Returns true on success.
+fn publishToBus(
+    eb: *bus_mod.Bus,
+    allocator: std.mem.Allocator,
+    channel: []const u8,
+    sender_id: []const u8,
+    chat_id: []const u8,
+    content: []const u8,
+    session_key: []const u8,
+    metadata_json: ?[]const u8,
+) bool {
+    const msg = bus_mod.makeInboundFull(
+        allocator,
+        channel,
+        sender_id,
+        chat_id,
+        content,
+        session_key,
+        &.{},
+        metadata_json,
+    ) catch return false;
+    eb.publishInbound(msg) catch {
+        msg.deinit(allocator);
+        return false;
+    };
+    return true;
+}
 
 /// Check if all registered health components are OK.
 fn isHealthOk() bool {
@@ -781,11 +811,12 @@ pub fn sendTelegramReply(allocator: std.mem.Allocator, bot_token: []const u8, ch
 /// Run the HTTP gateway. Binds to host:port and serves HTTP requests.
 /// Endpoints: GET /health, GET /ready, POST /pair, POST /webhook, GET|POST /whatsapp, POST /telegram, POST /line, POST /lark
 /// If config_ptr is null, loads config internally (for backward compatibility).
-pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr: ?*const Config) !void {
+pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr: ?*const Config, event_bus: ?*bus_mod.Bus) !void {
     health.markComponentOk("gateway");
 
     var state = GatewayState.init(allocator);
     defer state.deinit();
+    state.event_bus = event_bus;
 
     var owned_config: ?Config = null;
     var config_opt: ?*const Config = null;
@@ -817,7 +848,7 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
             cfg.gateway.require_pairing,
             cfg.gateway.paired_tokens,
         );
-        if (cfg.channels.telegram) |tg_cfg| {
+        if (cfg.channels.telegramPrimary()) |tg_cfg| {
             state.telegram_bot_token = tg_cfg.bot_token;
             state.telegram_allow_from = tg_cfg.allow_from;
             state.telegram_account_id = tg_cfg.account_id;
@@ -988,10 +1019,15 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                         const body = extractBody(raw);
                         if (body) |b| {
                             const msg_text = jsonStringField(b, "message") orelse jsonStringField(b, "text") orelse b;
-                            if (session_mgr_opt) |*sm| {
-                                // Build session key using bearer token if available
-                                var sk_buf: [128]u8 = undefined;
-                                const session_key = std.fmt.bufPrint(&sk_buf, "webhook:{s}", .{bearer orelse "anon"}) catch "webhook:anon";
+                            var sk_buf: [128]u8 = undefined;
+                            const session_key = std.fmt.bufPrint(&sk_buf, "webhook:{s}", .{bearer orelse "anon"}) catch "webhook:anon";
+
+                            if (state.event_bus) |eb| {
+                                // Bus mode: publish and return immediately
+                                _ = publishToBus(eb, req_allocator, "webhook", bearer orelse "anon", session_key, msg_text, session_key, null);
+                                response_body = "{\"status\":\"received\"}";
+                            } else if (session_mgr_opt) |*sm| {
+                                // In-request mode (standalone gateway)
                                 const reply: ?[]const u8 = sm.processMessage(session_key, msg_text) catch |err| blk: {
                                     if (err == error.ProviderDoesNotSupportVision) {
                                         response_body = "{\"error\":\"provider does not support image input\"}";
@@ -1094,8 +1130,21 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                         if (!tg_authorized) {
                             response_body = "{\"status\":\"unauthorized\"}";
                         } else if (msg_text != null and chat_id != null) {
-                            // Process the message in-process
-                            if (session_mgr_opt) |*sm| {
+                            const sender = jsonStringField(b, "username") orelse "unknown";
+                            var cid_buf: [32]u8 = undefined;
+                            const cid_str = std.fmt.bufPrint(&cid_buf, "{d}", .{chat_id.?}) catch "0";
+
+                            if (state.event_bus) |eb| {
+                                // Bus mode: publish to event bus, let daemon dispatch
+                                var meta_buf: [256]u8 = undefined;
+                                const meta = std.fmt.bufPrint(&meta_buf, "{{\"account_id\":\"{s}\"}}", .{state.telegram_account_id}) catch null;
+                                var kb: [64]u8 = undefined;
+                                const tg_cfg_opt: ?*const Config = if (config_opt) |*cfg| cfg else null;
+                                const sk = telegramSessionKeyRouted(req_allocator, &kb, chat_id.?, b, tg_cfg_opt, state.telegram_account_id);
+                                _ = publishToBus(eb, req_allocator, "telegram", sender, cid_str, msg_text.?, sk, meta);
+                                response_body = "{\"status\":\"ok\"}";
+                            } else if (session_mgr_opt) |*sm| {
+                                // In-request mode (standalone gateway)
                                 var kb: [64]u8 = undefined;
                                 const tg_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
                                 const sk = telegramSessionKeyRouted(req_allocator, &kb, chat_id.?, b, tg_cfg_opt, state.telegram_account_id);
@@ -1109,7 +1158,6 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                                 };
                                 if (reply) |r| {
                                     defer allocator.free(r);
-                                    // Send reply back to Telegram
                                     if (state.telegram_bot_token.len > 0) {
                                         sendTelegramReply(req_allocator, state.telegram_bot_token, chat_id.?, r) catch {};
                                     }
@@ -1181,10 +1229,17 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                             const msg_text = jsonStringField(b, "text") orelse jsonStringField(b, "body") orelse
                                 channels.whatsapp.WhatsAppChannel.downloadMediaFromPayload(req_allocator, state.whatsapp_access_token, b);
                             if (msg_text) |mt| {
-                                if (session_mgr_opt) |*sm| {
-                                    var wa_key_buf: [256]u8 = undefined;
-                                    const wa_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
-                                    const wa_session_key = whatsappSessionKeyRouted(req_allocator, &wa_key_buf, b, wa_cfg_opt, state.whatsapp_account_id);
+                                var wa_key_buf: [256]u8 = undefined;
+                                const wa_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
+                                const wa_session_key = whatsappSessionKeyRouted(req_allocator, &wa_key_buf, b, wa_cfg_opt, state.whatsapp_account_id);
+                                const wa_sender = jsonStringField(b, "from") orelse "unknown";
+
+                                if (state.event_bus) |eb| {
+                                    var meta_buf: [256]u8 = undefined;
+                                    const meta = std.fmt.bufPrint(&meta_buf, "{{\"account_id\":\"{s}\"}}", .{state.whatsapp_account_id}) catch null;
+                                    _ = publishToBus(eb, req_allocator, "whatsapp", wa_sender, wa_session_key, mt, wa_session_key, meta);
+                                    response_body = "{\"status\":\"received\"}";
+                                } else if (session_mgr_opt) |*sm| {
                                     const reply: ?[]const u8 = sm.processMessage(wa_session_key, mt) catch |err| blk: {
                                         if (err == error.ProviderDoesNotSupportVision) {
                                             response_body = "{\"error\":\"provider does not support image input\"}";
@@ -1223,10 +1278,17 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                             const msg_text = jsonStringField(b, "text") orelse jsonStringField(b, "body") orelse
                                 channels.whatsapp.WhatsAppChannel.downloadMediaFromPayload(req_allocator, state.whatsapp_access_token, b);
                             if (msg_text) |mt| {
-                                if (session_mgr_opt) |*sm| {
-                                    var wa_key_buf: [256]u8 = undefined;
-                                    const wa_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
-                                    const wa_session_key = whatsappSessionKeyRouted(req_allocator, &wa_key_buf, b, wa_cfg_opt, state.whatsapp_account_id);
+                                var wa_key_buf: [256]u8 = undefined;
+                                const wa_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
+                                const wa_session_key = whatsappSessionKeyRouted(req_allocator, &wa_key_buf, b, wa_cfg_opt, state.whatsapp_account_id);
+                                const wa_sender_ns = jsonStringField(b, "from") orelse "unknown";
+
+                                if (state.event_bus) |eb| {
+                                    var meta_buf: [256]u8 = undefined;
+                                    const meta = std.fmt.bufPrint(&meta_buf, "{{\"account_id\":\"{s}\"}}", .{state.whatsapp_account_id}) catch null;
+                                    _ = publishToBus(eb, req_allocator, "whatsapp", wa_sender_ns, wa_session_key, mt, wa_session_key, meta);
+                                    response_body = "{\"status\":\"received\"}";
+                                } else if (session_mgr_opt) |*sm| {
                                     const reply: ?[]const u8 = sm.processMessage(wa_session_key, mt) catch |err| blk: {
                                         if (err == error.ProviderDoesNotSupportVision) {
                                             response_body = "{\"error\":\"provider does not support image input\"}";
@@ -1290,14 +1352,19 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                                 } else continue;
                             }
                             if (evt.message_text) |text| {
-                                if (session_mgr_opt) |*sm| {
-                                    var kb: [128]u8 = undefined;
-                                    const line_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
-                                    const sk = lineSessionKeyRouted(req_allocator, &kb, evt, line_cfg_opt, state.line_account_id);
+                                var kb: [128]u8 = undefined;
+                                const line_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
+                                const sk = lineSessionKeyRouted(req_allocator, &kb, evt, line_cfg_opt, state.line_account_id);
+                                const uid = evt.user_id orelse "unknown";
+
+                                if (state.event_bus) |eb| {
+                                    var meta_buf: [256]u8 = undefined;
+                                    const meta = std.fmt.bufPrint(&meta_buf, "{{\"account_id\":\"{s}\"}}", .{state.line_account_id}) catch null;
+                                    _ = publishToBus(eb, req_allocator, "line", uid, uid, text, sk, meta);
+                                } else if (session_mgr_opt) |*sm| {
                                     const reply: ?[]const u8 = sm.processMessage(sk, text) catch null;
                                     if (reply) |r| {
                                         defer allocator.free(r);
-                                        // Reply via LINE Reply API if we have a reply token
                                         if (evt.reply_token) |rt| {
                                             var line_ch = channels.line.LineChannel.init(req_allocator, .{
                                                 .access_token = state.line_access_token,
@@ -1373,10 +1440,15 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                         break :lark_handler;
                     };
                     for (messages) |msg| {
-                        if (session_mgr_opt) |*sm| {
-                            var kb: [128]u8 = undefined;
-                            const lark_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
-                            const sk = larkSessionKeyRouted(req_allocator, &kb, msg, lark_cfg_opt, state.lark_account_id);
+                        var kb: [128]u8 = undefined;
+                        const lark_cfg_opt: ?*const Config = if (config_opt) |cfg| cfg else null;
+                        const sk = larkSessionKeyRouted(req_allocator, &kb, msg, lark_cfg_opt, state.lark_account_id);
+
+                        if (state.event_bus) |eb| {
+                            var meta_buf: [256]u8 = undefined;
+                            const meta = std.fmt.bufPrint(&meta_buf, "{{\"account_id\":\"{s}\"}}", .{state.lark_account_id}) catch null;
+                            _ = publishToBus(eb, req_allocator, "lark", msg.sender, msg.sender, msg.content, sk, meta);
+                        } else if (session_mgr_opt) |*sm| {
                             const reply: ?[]const u8 = sm.processMessage(sk, msg.content) catch null;
                             if (reply) |r| {
                                 defer allocator.free(r);
@@ -2094,4 +2166,45 @@ test "handleReady recovered component shows healthy" {
     defer if (resp.allocated) std.testing.allocator.free(@constCast(resp.body));
     try std.testing.expectEqualStrings("200 OK", resp.http_status);
     try std.testing.expect(std.mem.indexOf(u8, resp.body, "\"healthy\":true") != null);
+}
+
+test "publishToBus creates inbound message on bus" {
+    const alloc = std.testing.allocator;
+    var eb = bus_mod.Bus.init();
+    defer eb.close();
+
+    const ok = publishToBus(&eb, alloc, "telegram", "user1", "chat42", "hello", "telegram:chat42", null);
+    try std.testing.expect(ok);
+
+    // Consume the message
+    const msg = eb.consumeInbound() orelse return error.TestUnexpectedResult;
+    defer msg.deinit(alloc);
+    try std.testing.expectEqualStrings("telegram", msg.channel);
+    try std.testing.expectEqualStrings("user1", msg.sender_id);
+    try std.testing.expectEqualStrings("chat42", msg.chat_id);
+    try std.testing.expectEqualStrings("hello", msg.content);
+    try std.testing.expectEqualStrings("telegram:chat42", msg.session_key);
+}
+
+test "publishToBus with metadata" {
+    const alloc = std.testing.allocator;
+    var eb = bus_mod.Bus.init();
+    defer eb.close();
+
+    const meta = "{\"account_id\":\"personal\"}";
+    const ok = publishToBus(&eb, alloc, "whatsapp", "sender", "chat1", "hi", "wa:chat1", meta);
+    try std.testing.expect(ok);
+
+    const msg = eb.consumeInbound() orelse return error.TestUnexpectedResult;
+    defer msg.deinit(alloc);
+    try std.testing.expectEqualStrings("whatsapp", msg.channel);
+    try std.testing.expectEqualStrings("hi", msg.content);
+    try std.testing.expect(msg.metadata_json != null);
+    try std.testing.expectEqualStrings("{\"account_id\":\"personal\"}", msg.metadata_json.?);
+}
+
+test "GatewayState event_bus defaults to null" {
+    var gs = GatewayState.init(std.testing.allocator);
+    defer gs.deinit();
+    try std.testing.expect(gs.event_bus == null);
 }

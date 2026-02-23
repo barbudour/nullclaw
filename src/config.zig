@@ -62,6 +62,9 @@ pub const ModelPricing = config_types.ModelPricing;
 pub const ToolsConfig = config_types.ToolsConfig;
 pub const ProviderEntry = config_types.ProviderEntry;
 pub const AudioMediaConfig = config_types.AudioMediaConfig;
+pub const DmScope = config_types.DmScope;
+pub const IdentityLink = config_types.IdentityLink;
+pub const SessionConfig = config_types.SessionConfig;
 
 // ── Top-level Config ────────────────────────────────────────────
 
@@ -107,6 +110,7 @@ pub const Config = struct {
     hardware: HardwareConfig = .{},
     security: SecurityConfig = .{},
     tools: ToolsConfig = .{},
+    session: SessionConfig = .{},
 
     // Convenience aliases for backward-compat flat access used by other modules.
     // These are set during load() to mirror nested values.
@@ -1396,8 +1400,8 @@ test "parse telegram accounts" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.telegram != null);
-    const tg = cfg.channels.telegram.?;
+    try std.testing.expect(cfg.channels.telegram.len > 0);
+    const tg = cfg.channels.telegram[0];
     try std.testing.expectEqualStrings("main", tg.account_id);
     try std.testing.expectEqualStrings("123:ABC", tg.bot_token);
     try std.testing.expectEqual(@as(usize, 1), tg.allow_from.len);
@@ -1409,21 +1413,27 @@ test "parse telegram accounts" {
     for (tg.allow_from) |u| allocator.free(u);
     allocator.free(tg.allow_from);
     allocator.free(tg.proxy.?);
+    allocator.free(cfg.channels.telegram);
 }
 
-test "parse telegram accounts prefers default account" {
+test "parse telegram multi-account sorted alphabetically" {
     const allocator = std.testing.allocator;
     const json =
         \\{"channels": {"telegram": {"accounts": {"main": {"bot_token": "main:tok"}, "default": {"bot_token": "default:tok"}, "backup": {"bot_token": "backup:tok"}}}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.telegram != null);
-    const tg = cfg.channels.telegram.?;
-    try std.testing.expectEqualStrings("default", tg.account_id);
-    try std.testing.expectEqualStrings("default:tok", tg.bot_token);
-    allocator.free(tg.account_id);
-    allocator.free(tg.bot_token);
+    try std.testing.expectEqual(@as(usize, 3), cfg.channels.telegram.len);
+    // Sorted alphabetically: backup < default < main
+    try std.testing.expectEqualStrings("backup", cfg.channels.telegram[0].account_id);
+    try std.testing.expectEqualStrings("default", cfg.channels.telegram[1].account_id);
+    try std.testing.expectEqualStrings("main", cfg.channels.telegram[2].account_id);
+    // Free all accounts
+    for (cfg.channels.telegram) |acc| {
+        allocator.free(acc.account_id);
+        allocator.free(acc.bot_token);
+    }
+    allocator.free(cfg.channels.telegram);
 }
 
 test "parse telegram accounts keeps single custom account id" {
@@ -1433,12 +1443,13 @@ test "parse telegram accounts keeps single custom account id" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.telegram != null);
-    const tg = cfg.channels.telegram.?;
+    try std.testing.expect(cfg.channels.telegram.len > 0);
+    const tg = cfg.channels.telegram[0];
     try std.testing.expectEqualStrings("phone_1", tg.account_id);
     try std.testing.expectEqualStrings("123:ABC", tg.bot_token);
     allocator.free(tg.account_id);
     allocator.free(tg.bot_token);
+    allocator.free(cfg.channels.telegram);
 }
 
 test "parse discord accounts" {
@@ -1448,8 +1459,8 @@ test "parse discord accounts" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.discord != null);
-    const dc = cfg.channels.discord.?;
+    try std.testing.expect(cfg.channels.discord.len > 0);
+    const dc = cfg.channels.discord[0];
     try std.testing.expectEqualStrings("main", dc.account_id);
     try std.testing.expectEqualStrings("disc-tok", dc.token);
     try std.testing.expectEqualStrings("12345", dc.guild_id.?);
@@ -1459,6 +1470,7 @@ test "parse discord accounts" {
     allocator.free(dc.guild_id.?);
     for (dc.allow_from) |u| allocator.free(u);
     allocator.free(dc.allow_from);
+    allocator.free(cfg.channels.discord);
 }
 
 test "parse slack accounts" {
@@ -1468,8 +1480,8 @@ test "parse slack accounts" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.slack != null);
-    const sc = cfg.channels.slack.?;
+    try std.testing.expect(cfg.channels.slack.len > 0);
+    const sc = cfg.channels.slack[0];
     try std.testing.expectEqualStrings("main", sc.account_id);
     try std.testing.expectEqualStrings("xoxb-123", sc.bot_token);
     try std.testing.expectEqualStrings("xapp-456", sc.app_token.?);
@@ -1478,6 +1490,7 @@ test "parse slack accounts" {
     allocator.free(sc.app_token.?);
     for (sc.allow_from) |u| allocator.free(u);
     allocator.free(sc.allow_from);
+    allocator.free(cfg.channels.slack);
 }
 
 test "parse irc accounts" {
