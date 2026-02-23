@@ -225,6 +225,69 @@ pub const Config = struct {
         return config_parse.parseJson(self, content);
     }
 
+    fn writeChannelFieldSeparator(w: *std.Io.Writer, wrote_any: bool) !void {
+        if (wrote_any) {
+            try w.print(",\n", .{});
+        }
+    }
+
+    fn writeChannelAccounts(w: *std.Io.Writer, channel_name: []const u8, accounts: anytype) !void {
+        try w.print("    \"{s}\": {{\n      \"accounts\": {{", .{channel_name});
+        for (accounts, 0..) |account, i| {
+            if (i == 0) {
+                try w.print("\n", .{});
+            } else {
+                try w.print(",\n", .{});
+            }
+            const account_id = if (comptime @hasField(@TypeOf(account), "account_id"))
+                account.account_id
+            else
+                "default";
+            try w.print("        \"{s}\": {f}", .{ account_id, std.json.fmt(account, .{}) });
+        }
+        try w.print("\n      }}\n    }}", .{});
+    }
+
+    fn writeChannelsSection(self: *const Config, w: *std.Io.Writer) !void {
+        try w.print("  \"channels\": {{\n", .{});
+
+        var wrote_any = false;
+        if (!self.channels.cli) {
+            try writeChannelFieldSeparator(w, wrote_any);
+            try w.print("    \"cli\": false", .{});
+            wrote_any = true;
+        }
+
+        inline for (std.meta.fields(ChannelsConfig)) |field| {
+            if (comptime std.mem.eql(u8, field.name, "cli")) continue;
+
+            const channel_value = @field(self.channels, field.name);
+            switch (@typeInfo(field.type)) {
+                .pointer => |ptr| {
+                    if (ptr.size == .slice and channel_value.len > 0) {
+                        try writeChannelFieldSeparator(w, wrote_any);
+                        try writeChannelAccounts(w, field.name, channel_value);
+                        wrote_any = true;
+                    }
+                },
+                .optional => {
+                    if (channel_value) |val| {
+                        try writeChannelFieldSeparator(w, wrote_any);
+                        try w.print("    \"{s}\": {f}", .{ field.name, std.json.fmt(val, .{}) });
+                        wrote_any = true;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (wrote_any) {
+            try w.print("\n  }},\n", .{});
+        } else {
+            try w.print("  }},\n", .{});
+        }
+    }
+
     /// Apply NULLCLAW_* environment variable overrides.
     pub fn applyEnvOverrides(self: *Config) void {
         // Provider
@@ -379,6 +442,9 @@ pub const Config = struct {
             try w.print("    \"max_actions_per_hour\": {d}\n", .{self.autonomy.max_actions_per_hour});
         }
         try w.print("  }},\n", .{});
+
+        // Channels
+        try self.writeChannelsSection(w);
 
         // Memory
         try w.print("  \"memory\": {{\n", .{});
@@ -558,6 +624,66 @@ test "validation passes for defaults" {
         .allocator = std.testing.allocator,
     };
     try cfg.validate();
+}
+
+test "save includes channels section by default" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const config_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{base});
+    defer allocator.free(config_path);
+
+    const cfg = Config{
+        .workspace_dir = base,
+        .config_path = config_path,
+        .allocator = allocator,
+    };
+    try cfg.save();
+
+    const file = try std.fs.openFileAbsolute(config_path, .{});
+    defer file.close();
+    const content = try file.readToEndAlloc(allocator, 128 * 1024);
+    defer allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"channels\": {") != null);
+}
+
+test "save writes configured telegram channel account" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const config_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{base});
+    defer allocator.free(config_path);
+
+    var cfg = Config{
+        .workspace_dir = base,
+        .config_path = config_path,
+        .allocator = allocator,
+    };
+    cfg.channels.telegram = &.{
+        .{
+            .account_id = "main",
+            .bot_token = "123:ABC",
+            .allow_from = &.{"user1"},
+        },
+    };
+    try cfg.save();
+
+    const file = try std.fs.openFileAbsolute(config_path, .{});
+    defer file.close();
+    const content = try file.readToEndAlloc(allocator, 128 * 1024);
+    defer allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"telegram\": {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"accounts\": {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"main\": {\"account_id\":\"main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"bot_token\":\"123:ABC\"") != null);
 }
 
 test "syncFlatFields propagates nested values" {
