@@ -8,6 +8,7 @@
 //!   - Slack (polling conversations.history)
 //!   - WhatsApp (webhook-based)
 //!   - Matrix (long-polling /sync)
+//!   - Mattermost (WebSocket + REST API)
 //!   - IRC (TLS socket)
 //!   - iMessage (AppleScript + SQLite on macOS)
 //!   - Email (IMAP/SMTP)
@@ -96,6 +97,7 @@ pub const discord = @import("discord.zig");
 pub const slack = @import("slack.zig");
 pub const whatsapp = @import("whatsapp.zig");
 pub const matrix = @import("matrix.zig");
+pub const mattermost = @import("mattermost.zig");
 pub const irc = @import("irc.zig");
 pub const imessage = @import("imessage.zig");
 pub const email = @import("email.zig");

@@ -726,8 +726,12 @@ pub const DiscordChannel = struct {
         };
         defer self.allocator.free(final_content);
 
-        // Build session_key and publish to bus
-        const session_key = try std.fmt.allocPrint(self.allocator, "discord:{s}", .{channel_id});
+        // Build account-aware session key fallback to prevent cross-account bleed
+        // when route resolution is unavailable.
+        const session_key = if (guild_id == null)
+            try std.fmt.allocPrint(self.allocator, "discord:{s}:direct:{s}", .{ self.account_id, author_id })
+        else
+            try std.fmt.allocPrint(self.allocator, "discord:{s}:channel:{s}", .{ self.account_id, channel_id });
         defer self.allocator.free(session_key);
 
         var metadata_buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -964,7 +968,7 @@ test "discord handleMessageCreate publishes inbound guild message with metadata"
     try std.testing.expectEqualStrings("u-1", msg.sender_id);
     try std.testing.expectEqualStrings("c-1", msg.chat_id);
     try std.testing.expectEqualStrings("hello", msg.content);
-    try std.testing.expectEqualStrings("discord:c-1", msg.session_key);
+    try std.testing.expectEqualStrings("discord:dc-main:channel:c-1", msg.session_key);
     try std.testing.expect(msg.metadata_json != null);
 
     const meta = try std.json.parseFromSlice(std.json.Value, alloc, msg.metadata_json.?, .{});
@@ -999,7 +1003,7 @@ test "discord handleMessageCreate sets is_dm metadata for direct messages" {
 
     var msg = event_bus.consumeInbound() orelse return try std.testing.expect(false);
     defer msg.deinit(alloc);
-    try std.testing.expectEqualStrings("discord:dm-7", msg.session_key);
+    try std.testing.expectEqualStrings("discord:dc-main:direct:u-7", msg.session_key);
     try std.testing.expect(msg.metadata_json != null);
 
     const meta = try std.json.parseFromSlice(std.json.Value, alloc, msg.metadata_json.?, .{});

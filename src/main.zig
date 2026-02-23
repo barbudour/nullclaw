@@ -714,6 +714,13 @@ fn dispatchChannelStart(
             std.debug.print("Signal channel is not configured.\n", .{});
             std.process.exit(1);
         },
+        .matrix => {
+            if (config.channels.matrixPrimary()) |mx_config| {
+                return runMatrixChannel(allocator, args, config, mx_config);
+            }
+            std.debug.print("Matrix channel is not configured.\n", .{});
+            std.process.exit(1);
+        },
         else => return runGatewayChannel(allocator, config, meta.key),
     }
 }
@@ -894,6 +901,7 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
         signal_config.ignore_stories,
     );
     sg.group_policy = signal_config.group_policy;
+    sg.account_id = signal_config.account_id;
 
     // Verify health
     if (!sg.healthCheck()) {
@@ -984,14 +992,36 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
         for (messages) |msg| {
             std.debug.print("[{s}] {s}: {s}\n", .{ msg.channel, msg.id, msg.content });
 
-            // Session key: include group context for isolation
-            const session_key = if (msg.is_group)
-                std.fmt.bufPrint(&key_buf, "signal:group:{s}:{s}", .{
-                    msg.reply_target orelse "unknown",
-                    msg.sender,
-                }) catch msg.sender
-            else
-                std.fmt.bufPrint(&key_buf, "signal:{s}", .{msg.sender}) catch msg.sender;
+            // Session key — resolve through route engine, fallback to legacy key.
+            const group_peer_id = yc.channels.signal.signalGroupPeerId(msg.reply_target);
+            var routed_session_key: ?[]const u8 = null;
+            defer if (routed_session_key) |key| allocator.free(key);
+            const session_key = blk: {
+                const route = yc.agent_routing.resolveRouteWithSession(
+                    allocator,
+                    .{
+                        .channel = "signal",
+                        .account_id = sg.account_id,
+                        .peer = .{
+                            .kind = if (msg.is_group) .group else .direct,
+                            .id = if (msg.is_group) group_peer_id else msg.sender,
+                        },
+                    },
+                    config.agent_bindings,
+                    config.agents,
+                    config.session,
+                ) catch break :blk if (msg.is_group)
+                    std.fmt.bufPrint(&key_buf, "signal:{s}:group:{s}:{s}", .{
+                        sg.account_id,
+                        group_peer_id,
+                        msg.sender,
+                    }) catch msg.sender
+                else
+                    std.fmt.bufPrint(&key_buf, "signal:{s}:{s}", .{ sg.account_id, msg.sender }) catch msg.sender;
+                allocator.free(route.main_session_key);
+                routed_session_key = route.session_key;
+                break :blk route.session_key;
+            };
 
             const reply = session_mgr.processMessage(session_key, msg.content) catch |err| {
                 std.debug.print("  Agent error: {}\n", .{err});
@@ -1029,6 +1059,53 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
         // Small delay between polls
         std.Thread.sleep(500 * std.time.ns_per_ms);
     }
+}
+
+// ── Matrix Channel ────────────────────────────────────────────────
+
+fn runMatrixChannel(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    config: *const yc.config.Config,
+    matrix_config: yc.config.MatrixConfig,
+) !void {
+    _ = args;
+
+    var mx = yc.channels.matrix.MatrixChannel.initFromConfig(allocator, matrix_config);
+
+    std.debug.print("nullclaw Matrix bot starting...\n", .{});
+    std.debug.print("  Provider: {s}\n", .{config.default_provider});
+    std.debug.print("  Homeserver: {s}\n", .{mx.homeserver});
+    std.debug.print("  Account ID: {s}\n", .{mx.account_id});
+    std.debug.print("  Room: {s}\n", .{mx.room_id});
+    std.debug.print("  Group policy: {s}\n", .{mx.group_policy});
+    if (mx.group_allow_from.len == 0) {
+        std.debug.print("  Group allowed senders: (fallback to allow_from)\n", .{});
+    } else if (mx.group_allow_from.len == 1 and std.mem.eql(u8, mx.group_allow_from[0], "*")) {
+        std.debug.print("  Group allowed senders: *\n", .{});
+    } else {
+        std.debug.print("  Group allowed senders:", .{});
+        for (mx.group_allow_from) |entry| {
+            std.debug.print(" {s}", .{entry});
+        }
+        std.debug.print("\n", .{});
+    }
+
+    if (!mx.healthCheck()) {
+        std.debug.print("Matrix health check failed. Verify homeserver/access_token.\n", .{});
+        std.process.exit(1);
+    }
+
+    std.debug.print("  Polling for messages... (Ctrl+C to stop)\n\n", .{});
+
+    const runtime = yc.channel_loop.ChannelRuntime.init(allocator, config) catch |err| {
+        std.debug.print("Runtime init failed: {}\n", .{err});
+        std.process.exit(1);
+    };
+    defer runtime.deinit();
+
+    var loop_state = yc.channel_loop.MatrixLoopState.init();
+    yc.channel_loop.runMatrixLoop(allocator, config, runtime, &loop_state, &mx);
 }
 
 // ── Telegram Channel ───────────────────────────────────────────────-
@@ -1087,6 +1164,7 @@ fn runTelegramChannel(allocator: std.mem.Allocator, args: []const []const u8, co
 
     var tg = yc.channels.telegram.TelegramChannel.init(allocator, telegram_config.bot_token, allowed, telegram_config.group_allow_from, telegram_config.group_policy);
     tg.proxy = telegram_config.proxy;
+    tg.account_id = telegram_config.account_id;
 
     // Set up transcription — key comes from providers.{audio_media.provider}
     const trans = config.audio_media;
@@ -1206,9 +1284,29 @@ fn runTelegramChannel(allocator: std.mem.Allocator, args: []const []const u8, co
             const use_reply_to = msg.is_group or telegram_config.reply_in_private;
             const reply_to_id: ?i64 = if (use_reply_to) msg.message_id else null;
 
-            // Session key: "telegram:{chat_id}"
+            // Session key — resolve through route engine, fallback to legacy key.
             var key_buf: [128]u8 = undefined;
-            const session_key = std.fmt.bufPrint(&key_buf, "telegram:{s}", .{msg.sender}) catch msg.sender;
+            var routed_session_key: ?[]const u8 = null;
+            defer if (routed_session_key) |key| allocator.free(key);
+            const session_key = blk: {
+                const route = yc.agent_routing.resolveRouteWithSession(
+                    allocator,
+                    .{
+                        .channel = "telegram",
+                        .account_id = tg.account_id,
+                        .peer = .{
+                            .kind = if (msg.is_group) .group else .direct,
+                            .id = msg.sender,
+                        },
+                    },
+                    config.agent_bindings,
+                    config.agents,
+                    config.session,
+                ) catch break :blk std.fmt.bufPrint(&key_buf, "telegram:{s}:{s}", .{ tg.account_id, msg.sender }) catch msg.sender;
+                allocator.free(route.main_session_key);
+                routed_session_key = route.session_key;
+                break :blk route.session_key;
+            };
 
             // Start periodic typing indicator while LLM is thinking
             typing.start(msg.sender);
@@ -1240,10 +1338,7 @@ fn runTelegramChannel(allocator: std.mem.Allocator, args: []const []const u8, co
         if (messages.len > 0) {
             // Free message memory
             for (messages) |msg| {
-                allocator.free(msg.id);
-                allocator.free(msg.sender);
-                allocator.free(msg.content);
-                if (msg.first_name) |fn_| allocator.free(fn_);
+                msg.deinit(allocator);
             }
             allocator.free(messages);
         }

@@ -37,7 +37,7 @@ fn parseAgentBindingsArray(
     for (arr.items) |item| {
         if (item != .object) continue;
 
-        const agent_id_val = item.object.get("agent_id") orelse item.object.get("agentId") orelse continue;
+        const agent_id_val = item.object.get("agent_id") orelse continue;
         if (agent_id_val != .string) continue;
 
         var binding = agent_routing.AgentBinding{
@@ -56,13 +56,13 @@ fn parseAgentBindingsArray(
                 if (mv.object.get("channel")) |v| {
                     if (v == .string) binding.match.channel = try allocator.dupe(u8, v.string);
                 }
-                if (mv.object.get("account_id") orelse mv.object.get("accountId")) |v| {
+                if (mv.object.get("account_id")) |v| {
                     if (v == .string) binding.match.account_id = try allocator.dupe(u8, v.string);
                 }
-                if (mv.object.get("guild_id") orelse mv.object.get("guildId")) |v| {
+                if (mv.object.get("guild_id")) |v| {
                     if (v == .string) binding.match.guild_id = try allocator.dupe(u8, v.string);
                 }
-                if (mv.object.get("team_id") orelse mv.object.get("teamId")) |v| {
+                if (mv.object.get("team_id")) |v| {
                     if (v == .string) binding.match.team_id = try allocator.dupe(u8, v.string);
                 }
                 if (mv.object.get("roles")) |v| {
@@ -172,15 +172,6 @@ fn parseTypedValue(comptime T: type, allocator: std.mem.Allocator, value: std.js
     }) catch null;
 }
 
-fn applyAccountAliases(comptime T: type, parsed: *T, account_value: std.json.Value) void {
-    if (comptime T == types.DiscordConfig) {
-        if (account_value != .object) return;
-        if (account_value.object.get("mention_only")) |v| {
-            if (v == .bool) parsed.require_mention = v.bool;
-        }
-    }
-}
-
 fn maybeSetAccountId(comptime T: type, allocator: std.mem.Allocator, parsed: *T, account_id: []const u8) !void {
     if (comptime @hasField(T, "account_id")) {
         const current = @field(parsed.*, "account_id");
@@ -196,12 +187,18 @@ fn parseMultiAccountChannel(comptime T: type, allocator: std.mem.Allocator, chan
 
     const accounts = try getAllAccountsSorted(allocator, channel_value.object);
     defer if (accounts.len > 0) allocator.free(accounts);
-    if (accounts.len == 0) return &.{};
+    if (accounts.len == 0) {
+        // Accept inline single-account format:
+        // "channel": { "token": "...", ... }
+        const parsed = parseTypedValue(T, allocator, channel_value) orelse return &.{};
+        var list: std.ArrayListUnmanaged(T) = .empty;
+        try list.append(allocator, parsed);
+        return try list.toOwnedSlice(allocator);
+    }
 
     var list: std.ArrayListUnmanaged(T) = .empty;
     for (accounts) |acc| {
         var parsed = parseTypedValue(T, allocator, acc.value) orelse continue;
-        applyAccountAliases(T, &parsed, acc.value);
         try maybeSetAccountId(T, allocator, &parsed, acc.id);
         try list.append(allocator, parsed);
     }
@@ -218,7 +215,6 @@ fn parseSingleAccountChannel(comptime T: type, allocator: std.mem.Allocator, cha
     const selected = getPreferredAccount(channel_value.object) orelse return null;
 
     var parsed = parseTypedValue(T, allocator, selected.value) orelse return null;
-    applyAccountAliases(T, &parsed, selected.value);
     try maybeSetAccountId(T, allocator, &parsed, selected.id);
     return parsed;
 }
@@ -422,22 +418,8 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
         }
     }
 
-    // Agent bindings (OpenClaw-compatible aliases):
-    // - "agent_bindings" (nullclaw internal)
-    // - "bindings" (OpenClaw)
-    // - "agents.bindings" (legacy nesting)
-    var bindings_src: ?std.json.Value = null;
-    if (root.get("agent_bindings")) |v| {
-        bindings_src = v;
-    } else if (root.get("bindings")) |v| {
-        bindings_src = v;
-    } else if (root.get("agents")) |agents_val| {
-        if (agents_val == .object) {
-            if (agents_val.object.get("bindings")) |v| {
-                bindings_src = v;
-            }
-        }
-    }
+    // Agent bindings (OpenClaw-style key, snake_case payload fields).
+    const bindings_src = root.get("bindings");
     if (bindings_src) |bindings_val| {
         if (bindings_val == .array) {
             self.agent_bindings = try parseAgentBindingsArray(self.allocator, bindings_val.array);
@@ -1047,8 +1029,7 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
     // Session config
     if (root.get("session")) |sess| {
         if (sess == .object) {
-            // Accept both "dm_scope" (snake_case) and "dmScope" (camelCase)
-            const dm_val = sess.object.get("dm_scope") orelse sess.object.get("dmScope");
+            const dm_val = sess.object.get("dm_scope");
             if (dm_val) |v| {
                 if (v == .string) {
                     const s = v.string;
@@ -1064,16 +1045,15 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                     }
                 }
             }
-            const idle_val = sess.object.get("idle_minutes") orelse sess.object.get("idleMinutes");
+            const idle_val = sess.object.get("idle_minutes");
             if (idle_val) |v| {
                 if (v == .integer) self.session.idle_minutes = @intCast(v.integer);
             }
-            const typing_val = sess.object.get("typing_interval_secs") orelse sess.object.get("typingIntervalSecs");
+            const typing_val = sess.object.get("typing_interval_secs");
             if (typing_val) |v| {
                 if (v == .integer) self.session.typing_interval_secs = @intCast(v.integer);
             }
-            // Accept both "identity_links" (snake_case) and "identityLinks" (camelCase)
-            const links_val = sess.object.get("identity_links") orelse sess.object.get("identityLinks");
+            const links_val = sess.object.get("identity_links");
             if (links_val) |links| {
                 var link_list: std.ArrayListUnmanaged(types.IdentityLink) = .empty;
                 if (links == .array) {

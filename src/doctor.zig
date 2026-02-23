@@ -258,24 +258,9 @@ pub fn checkConfigSemantics(
         }
     }
 
-    // Channels: at least one configured
-    const ch = &config.channels;
-    const has_channel = ch.telegram.len > 0 or
-        ch.discord.len > 0 or
-        ch.slack.len > 0 or
-        ch.webhook != null or
-        ch.imessage != null or
-        ch.matrix != null or
-        ch.whatsapp != null or
-        ch.irc != null or
-        ch.lark != null or
-        ch.dingtalk != null or
-        ch.signal.len > 0 or
-        ch.email != null or
-        ch.line != null or
-        ch.qq.len > 0 or
-        ch.onebot.len > 0 or
-        ch.maixcam.len > 0;
+    // Channels: at least one non-CLI channel configured.
+    // Use channel_catalog to avoid hardcoding channel lists in doctor checks.
+    const has_channel = channel_catalog.hasAnyConfigured(config, false);
 
     if (has_channel) {
         try items.append(allocator, DiagItem.ok(cat, "at least one channel configured"));

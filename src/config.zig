@@ -25,6 +25,7 @@ pub const SlackConfig = config_types.SlackConfig;
 pub const WebhookConfig = config_types.WebhookConfig;
 pub const IMessageConfig = config_types.IMessageConfig;
 pub const MatrixConfig = config_types.MatrixConfig;
+pub const MattermostConfig = config_types.MattermostConfig;
 pub const WhatsAppConfig = config_types.WhatsAppConfig;
 pub const IrcConfig = config_types.IrcConfig;
 pub const LarkReceiveMode = config_types.LarkReceiveMode;
@@ -1056,7 +1057,7 @@ test "parse agents.list with id field" {
     allocator.free(cfg.agents);
 }
 
-test "parse top-level bindings alias with camelCase fields" {
+test "parse top-level bindings with snake_case fields" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1065,14 +1066,14 @@ test "parse top-level bindings alias with camelCase fields" {
         \\{
         \\  "bindings": [
         \\    {
-        \\      "agentId": "helper",
+        \\      "agent_id": "helper",
         \\      "comment": "primary route",
         \\      "match": {
         \\        "channel": "signal",
-        \\        "accountId": "phone",
+        \\        "account_id": "phone",
         \\        "peer": {"kind": "group", "id": "grp-1"},
-        \\        "guildId": "guild-9",
-        \\        "teamId": "team-2",
+        \\        "guild_id": "guild-9",
+        \\        "team_id": "team-2",
         \\        "roles": ["mod", "ops"]
         \\      }
         \\    }
@@ -1102,7 +1103,7 @@ test "parse top-level bindings alias with camelCase fields" {
     try std.testing.expectEqualStrings("grp-1", binding.match.peer.?.id);
 }
 
-test "parse nested agents.bindings alias" {
+test "ignore nested agents.bindings alias" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1129,12 +1130,7 @@ test "parse nested agents.bindings alias" {
     };
     try cfg.parseJson(json);
 
-    try std.testing.expectEqual(@as(usize, 1), cfg.agent_bindings.len);
-    try std.testing.expectEqualStrings("main", cfg.agent_bindings[0].agent_id);
-    try std.testing.expectEqualStrings("telegram", cfg.agent_bindings[0].match.channel.?);
-    try std.testing.expect(cfg.agent_bindings[0].match.peer != null);
-    try std.testing.expectEqual(@as(@import("agent_routing.zig").ChatType, .direct), cfg.agent_bindings[0].match.peer.?.kind);
-    try std.testing.expectEqualStrings("12345", cfg.agent_bindings[0].match.peer.?.id);
+    try std.testing.expectEqual(@as(usize, 0), cfg.agent_bindings.len);
 }
 
 // ── Environment variable override tests ─────────────────────────
@@ -1473,7 +1469,7 @@ test "parse discord accounts" {
     allocator.free(cfg.channels.discord);
 }
 
-test "parse discord mention_only alias maps to require_mention" {
+test "parse discord mention_only is ignored (snake_case only)" {
     const allocator = std.testing.allocator;
     const json =
         \\{"channels": {"discord": {"accounts": {"main": {"token": "disc-tok", "mention_only": true}}}}}
@@ -1481,7 +1477,7 @@ test "parse discord mention_only alias maps to require_mention" {
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
     try std.testing.expectEqual(@as(usize, 1), cfg.channels.discord.len);
-    try std.testing.expect(cfg.channels.discord[0].require_mention);
+    try std.testing.expect(!cfg.channels.discord[0].require_mention);
     allocator.free(cfg.channels.discord[0].account_id);
     allocator.free(cfg.channels.discord[0].token);
     allocator.free(cfg.channels.discord);
@@ -1514,8 +1510,8 @@ test "parse irc accounts" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.irc != null);
-    const ic = cfg.channels.irc.?;
+    try std.testing.expectEqual(@as(usize, 1), cfg.channels.irc.len);
+    const ic = cfg.channels.irc[0];
     try std.testing.expectEqualStrings("freenode", ic.account_id);
     try std.testing.expectEqualStrings("irc.libera.chat", ic.host);
     try std.testing.expectEqualStrings("bot", ic.nick);
@@ -1526,25 +1522,63 @@ test "parse irc accounts" {
     allocator.free(ic.nick);
     for (ic.channels) |c| allocator.free(c);
     allocator.free(ic.channels);
+    allocator.free(cfg.channels.irc);
 }
 
 test "parse matrix accounts" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"channels": {"matrix": {"accounts": {"main": {"homeserver": "https://matrix.org", "access_token": "syt_abc", "room_id": "!room:matrix.org"}}}}}
+        \\{"channels": {"matrix": {"accounts": {"main": {"homeserver": "https://matrix.org", "access_token": "syt_abc", "room_id": "!room:matrix.org", "user_id": "@bot:matrix.org", "group_allow_from": ["@alice:matrix.org"], "group_policy": "open"}}}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.matrix != null);
-    const mc = cfg.channels.matrix.?;
+    try std.testing.expectEqual(@as(usize, 1), cfg.channels.matrix.len);
+    const mc = cfg.channels.matrix[0];
     try std.testing.expectEqualStrings("main", mc.account_id);
     try std.testing.expectEqualStrings("https://matrix.org", mc.homeserver);
     try std.testing.expectEqualStrings("syt_abc", mc.access_token);
     try std.testing.expectEqualStrings("!room:matrix.org", mc.room_id);
+    try std.testing.expectEqualStrings("@bot:matrix.org", mc.user_id.?);
+    try std.testing.expectEqualStrings("open", mc.group_policy);
+    try std.testing.expectEqual(@as(usize, 1), mc.group_allow_from.len);
+    try std.testing.expectEqualStrings("@alice:matrix.org", mc.group_allow_from[0]);
     allocator.free(mc.account_id);
     allocator.free(mc.homeserver);
     allocator.free(mc.access_token);
     allocator.free(mc.room_id);
+    allocator.free(mc.user_id.?);
+    allocator.free(mc.group_policy);
+    for (mc.group_allow_from) |entry| allocator.free(entry);
+    allocator.free(mc.group_allow_from);
+    allocator.free(cfg.channels.matrix);
+}
+
+test "parse mattermost accounts" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const json =
+        \\{"channels": {"mattermost": {"accounts": {"main": {"bot_token": "mm-token", "base_url": "https://chat.example.com", "allow_from": ["user-a"], "group_allow_from": ["@alice"], "dm_policy": "open", "group_policy": "allowlist", "chatmode": "onchar", "onchar_prefixes": ["!"], "require_mention": false}}}}}
+    ;
+    var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
+    try cfg.parseJson(json);
+
+    try std.testing.expectEqual(@as(usize, 1), cfg.channels.mattermost.len);
+    const mm = cfg.channels.mattermost[0];
+    try std.testing.expectEqualStrings("main", mm.account_id);
+    try std.testing.expectEqualStrings("mm-token", mm.bot_token);
+    try std.testing.expectEqualStrings("https://chat.example.com", mm.base_url);
+    try std.testing.expectEqual(@as(usize, 1), mm.allow_from.len);
+    try std.testing.expectEqualStrings("user-a", mm.allow_from[0]);
+    try std.testing.expectEqual(@as(usize, 1), mm.group_allow_from.len);
+    try std.testing.expectEqualStrings("@alice", mm.group_allow_from[0]);
+    try std.testing.expectEqualStrings("open", mm.dm_policy);
+    try std.testing.expectEqualStrings("allowlist", mm.group_policy);
+    try std.testing.expectEqualStrings("onchar", mm.chatmode);
+    try std.testing.expectEqual(@as(usize, 1), mm.onchar_prefixes.len);
+    try std.testing.expectEqualStrings("!", mm.onchar_prefixes[0]);
+    try std.testing.expect(!mm.require_mention);
 }
 
 test "parse lark accounts" {
@@ -1554,8 +1588,8 @@ test "parse lark accounts" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.lark != null);
-    const lc = cfg.channels.lark.?;
+    try std.testing.expectEqual(@as(usize, 1), cfg.channels.lark.len);
+    const lc = cfg.channels.lark[0];
     try std.testing.expectEqualStrings("main", lc.account_id);
     try std.testing.expectEqualStrings("cli_abc", lc.app_id);
     try std.testing.expectEqualStrings("sec123", lc.app_secret);
@@ -1563,6 +1597,7 @@ test "parse lark accounts" {
     allocator.free(lc.account_id);
     allocator.free(lc.app_id);
     allocator.free(lc.app_secret);
+    allocator.free(cfg.channels.lark);
 }
 
 test "parse dingtalk accounts" {
@@ -1572,8 +1607,8 @@ test "parse dingtalk accounts" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.dingtalk != null);
-    const dc = cfg.channels.dingtalk.?;
+    try std.testing.expectEqual(@as(usize, 1), cfg.channels.dingtalk.len);
+    const dc = cfg.channels.dingtalk[0];
     try std.testing.expectEqualStrings("main", dc.account_id);
     try std.testing.expectEqualStrings("cid", dc.client_id);
     try std.testing.expectEqualStrings("csec", dc.client_secret);
@@ -1582,6 +1617,7 @@ test "parse dingtalk accounts" {
     allocator.free(dc.client_secret);
     for (dc.allow_from) |u| allocator.free(u);
     allocator.free(dc.allow_from);
+    allocator.free(cfg.channels.dingtalk);
 }
 
 test "parse whatsapp accounts" {
@@ -1591,8 +1627,8 @@ test "parse whatsapp accounts" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.whatsapp != null);
-    const wc = cfg.channels.whatsapp.?;
+    try std.testing.expectEqual(@as(usize, 1), cfg.channels.whatsapp.len);
+    const wc = cfg.channels.whatsapp[0];
     try std.testing.expectEqualStrings("main", wc.account_id);
     try std.testing.expectEqualStrings("wa-tok", wc.access_token);
     try std.testing.expectEqualStrings("12345", wc.phone_number_id);
@@ -1606,6 +1642,7 @@ test "parse whatsapp accounts" {
     allocator.free(wc.app_secret.?);
     for (wc.allow_from) |u| allocator.free(u);
     allocator.free(wc.allow_from);
+    allocator.free(cfg.channels.whatsapp);
 }
 
 test "parse signal multi-account sorted alphabetically" {
@@ -1692,7 +1729,7 @@ test "parse maixcam multi-account sorted with custom names" {
     try std.testing.expectEqual(@as(u16, 8888), cfg.channels.maixcam[1].port);
 }
 
-test "single-account channels prefer accounts.default when multiple exist" {
+test "multi-account channels keep all accounts sorted by account id" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1701,15 +1738,17 @@ test "single-account channels prefer accounts.default when multiple exist" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.line != null);
-    try std.testing.expect(cfg.channels.whatsapp != null);
-    try std.testing.expectEqualStrings("default", cfg.channels.line.?.account_id);
-    try std.testing.expectEqualStrings("line-default", cfg.channels.line.?.access_token);
-    try std.testing.expectEqualStrings("default", cfg.channels.whatsapp.?.account_id);
-    try std.testing.expectEqualStrings("wa-default", cfg.channels.whatsapp.?.access_token);
+    try std.testing.expectEqual(@as(usize, 2), cfg.channels.line.len);
+    try std.testing.expectEqual(@as(usize, 2), cfg.channels.whatsapp.len);
+    try std.testing.expectEqualStrings("default", cfg.channels.line[0].account_id);
+    try std.testing.expectEqualStrings("line-default", cfg.channels.line[0].access_token);
+    try std.testing.expectEqualStrings("main", cfg.channels.line[1].account_id);
+    try std.testing.expectEqualStrings("default", cfg.channels.whatsapp[0].account_id);
+    try std.testing.expectEqualStrings("wa-default", cfg.channels.whatsapp[0].access_token);
+    try std.testing.expectEqualStrings("main", cfg.channels.whatsapp[1].account_id);
 }
 
-test "single-account channels prefer accounts.main when default missing" {
+test "multi-account channels without default keep sorted order" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1718,9 +1757,11 @@ test "single-account channels prefer accounts.main when default missing" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.lark != null);
-    try std.testing.expectEqualStrings("main", cfg.channels.lark.?.account_id);
-    try std.testing.expectEqualStrings("app-main", cfg.channels.lark.?.app_id);
+    try std.testing.expectEqual(@as(usize, 2), cfg.channels.lark.len);
+    try std.testing.expectEqualStrings("backup", cfg.channels.lark[0].account_id);
+    try std.testing.expectEqualStrings("app-b", cfg.channels.lark[0].app_id);
+    try std.testing.expectEqualStrings("main", cfg.channels.lark[1].account_id);
+    try std.testing.expectEqualStrings("app-main", cfg.channels.lark[1].app_id);
 }
 
 test "parse imessage config" {
@@ -1730,12 +1771,32 @@ test "parse imessage config" {
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expect(cfg.channels.imessage != null);
-    const ic = cfg.channels.imessage.?;
+    try std.testing.expectEqual(@as(usize, 1), cfg.channels.imessage.len);
+    const ic = cfg.channels.imessage[0];
+    try std.testing.expectEqualStrings("default", ic.account_id);
     try std.testing.expect(ic.enabled);
     try std.testing.expectEqual(@as(usize, 1), ic.allow_from.len);
     for (ic.allow_from) |u| allocator.free(u);
     allocator.free(ic.allow_from);
+    allocator.free(cfg.channels.imessage);
+}
+
+test "parse imessage multi-account and preferred primary" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"channels": {"imessage": {"accounts": {"main": {"enabled": true}, "default": {"enabled": false}}}}}
+    ;
+    var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
+    try cfg.parseJson(json);
+    try std.testing.expectEqual(@as(usize, 2), cfg.channels.imessage.len);
+
+    const primary = cfg.channels.imessagePrimary();
+    try std.testing.expect(primary != null);
+    try std.testing.expectEqualStrings("default", primary.?.account_id);
+    try std.testing.expect(!primary.?.enabled);
+
+    for (cfg.channels.imessage) |acc| allocator.free(acc.account_id);
+    allocator.free(cfg.channels.imessage);
 }
 
 test "json parse reasoning_effort" {
@@ -1846,7 +1907,7 @@ test "multi-account: sorted alphabetically across channels" {
     allocator.free(cfg.channels.discord);
 }
 
-test "multi-account: telegram primary returns first account" {
+test "multi-account: telegram primary falls back to first account when no default/main exists" {
     const allocator = std.testing.allocator;
     const json =
         \\{"channels": {"telegram": {"accounts": {"alpha": {"bot_token": "a-tok"}, "beta": {"bot_token": "b-tok"}}}}}
@@ -1863,12 +1924,33 @@ test "multi-account: telegram primary returns first account" {
     allocator.free(cfg.channels.telegram);
 }
 
+test "multi-account: primary prefers default then main account ids" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"channels": {"telegram": {"accounts": {"zeta": {"bot_token": "z-tok"}, "default": {"bot_token": "d-tok"}, "main": {"bot_token": "m-tok"}}}}}
+    ;
+    var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
+    try cfg.parseJson(json);
+    const primary = cfg.channels.telegramPrimary();
+    try std.testing.expect(primary != null);
+    try std.testing.expectEqualStrings("default", primary.?.account_id);
+    try std.testing.expectEqualStrings("d-tok", primary.?.bot_token);
+
+    for (cfg.channels.telegram) |acc| {
+        allocator.free(acc.account_id);
+        allocator.free(acc.bot_token);
+    }
+    allocator.free(cfg.channels.telegram);
+}
+
 test "multi-account: primary returns null for empty slice" {
     const cfg_ch = config_types.ChannelsConfig{};
     try std.testing.expect(cfg_ch.telegramPrimary() == null);
     try std.testing.expect(cfg_ch.discordPrimary() == null);
     try std.testing.expect(cfg_ch.slackPrimary() == null);
     try std.testing.expect(cfg_ch.signalPrimary() == null);
+    try std.testing.expect(cfg_ch.imessagePrimary() == null);
+    try std.testing.expect(cfg_ch.mattermostPrimary() == null);
     try std.testing.expect(cfg_ch.qqPrimary() == null);
     try std.testing.expect(cfg_ch.onebotPrimary() == null);
     try std.testing.expect(cfg_ch.maixcamPrimary() == null);
@@ -1929,7 +2011,7 @@ test "multi-account: multiple channels configured simultaneously" {
 test "session config: parse dm_scope with dash format" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"session": {"dmScope": "per-peer"}}
+        \\{"session": {"dm_scope": "per-peer"}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
@@ -1949,7 +2031,7 @@ test "session config: parse dm_scope with underscore format" {
 test "session config: parse per-account-channel-peer scope" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"session": {"dmScope": "per-account-channel-peer"}}
+        \\{"session": {"dm_scope": "per-account-channel-peer"}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
@@ -1976,20 +2058,20 @@ test "session config: parse idle_minutes" {
     try std.testing.expectEqual(@as(u32, 30), cfg.session.idle_minutes);
 }
 
-test "session config: parse idleMinutes camelCase" {
+test "session config: ignores idleMinutes camelCase alias" {
     const allocator = std.testing.allocator;
     const json =
         \\{"session": {"idleMinutes": 45}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
-    try std.testing.expectEqual(@as(u32, 45), cfg.session.idle_minutes);
+    try std.testing.expectEqual(@as(u32, 60), cfg.session.idle_minutes);
 }
 
 test "session config: parse identity_links map format" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"session": {"identityLinks": {"alice": ["telegram:111", "discord:222"]}}}
+        \\{"session": {"identity_links": {"alice": ["telegram:111", "discord:222"]}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
@@ -2043,7 +2125,7 @@ test "session config: all dm_scope values accepted" {
         .{ "per_account_channel_peer", config_types.DmScope.per_account_channel_peer },
     };
     inline for (cases) |c| {
-        const json = "{\"session\": {\"dmScope\": \"" ++ c[0] ++ "\"}}";
+        const json = "{\"session\": {\"dm_scope\": \"" ++ c[0] ++ "\"}}";
         var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
         try cfg.parseJson(json);
         try std.testing.expectEqual(c[1], cfg.session.dm_scope);

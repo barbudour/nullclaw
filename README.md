@@ -352,8 +352,8 @@ Channel CJM coverage (ingress parsing/filtering, session key routing, account pr
 - `src/channel_manager.zig` (runtime channel registration/start semantics + listener mode wiring)
 - `src/config.zig` (OpenClaw-compatible `channels.*.accounts` parsing, multi-account selection/ordering, aliases)
 - `src/gateway.zig` (Telegram/WhatsApp/LINE/Lark routed session keys from webhook payloads)
-- `src/daemon.zig` (gateway-loop inbound route resolution for Discord/QQ/OneBot/MaixCam)
-- `src/channels/discord.zig`, `src/channels/qq.zig`, `src/channels/onebot.zig`, `src/channels/signal.zig`, `src/channels/line.zig`, `src/channels/whatsapp.zig` (per-channel inbound/outbound contracts)
+- `src/daemon.zig` (gateway-loop inbound route resolution for Discord/QQ/OneBot/Mattermost/MaixCam)
+- `src/channels/discord.zig`, `src/channels/mattermost.zig`, `src/channels/qq.zig`, `src/channels/onebot.zig`, `src/channels/signal.zig`, `src/channels/line.zig`, `src/channels/whatsapp.zig` (per-channel inbound/outbound contracts)
 
 ### Project Stats
 
@@ -378,7 +378,7 @@ src/
   agent.zig             Agent loop, auto-compaction, tool dispatch
   daemon.zig            Daemon supervisor with exponential backoff
   gateway.zig           HTTP gateway (rate limiting, idempotency, pairing)
-  channels/             17 channel implementations (telegram, signal, discord, slack, whatsapp, line, lark, onebot, qq, ...)
+  channels/             18 channel implementations (telegram, signal, matrix, mattermost, discord, slack, whatsapp, line, lark, onebot, qq, ...)
   providers/            22+ AI provider implementations
   memory/               SQLite backend, embeddings, vector search, hygiene, snapshots
   tools/                18 tool implementations

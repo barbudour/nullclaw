@@ -9,18 +9,20 @@ const bus_mod = @import("bus.zig");
 const Config = @import("config.zig").Config;
 const config_types = @import("config_types.zig");
 const channel_catalog = @import("channel_catalog.zig");
+const channel_adapters = @import("channel_adapters.zig");
 const dispatch = @import("channels/dispatch.zig");
 const channel_loop = @import("channel_loop.zig");
 const health = @import("health.zig");
 const daemon = @import("daemon.zig");
 const channels_mod = @import("channels/root.zig");
-const telegram = channels_mod.telegram;
-const signal_ch = channels_mod.signal;
+const mattermost = channels_mod.mattermost;
 const discord = channels_mod.discord;
+const imessage = channels_mod.imessage;
 const qq = channels_mod.qq;
 const onebot = channels_mod.onebot;
 const maixcam = channels_mod.maixcam;
 const slack = channels_mod.slack;
+const irc = channels_mod.irc;
 const Channel = channels_mod.Channel;
 
 const log = std.log.scoped(.channel_manager);
@@ -28,7 +30,7 @@ const log = std.log.scoped(.channel_manager);
 pub const ListenerType = enum {
     /// Telegram, Signal — poll in a loop
     polling,
-    /// Discord, QQ, OneBot — internal WebSocket/gateway
+    /// Discord, Mattermost, Slack, IRC, QQ, OneBot — internal socket/WebSocket loop
     gateway_loop,
     /// WhatsApp, Line, Lark — HTTP gateway receives
     webhook_only,
@@ -48,10 +50,7 @@ pub const Entry = struct {
     polling_state: ?PollingState = null,
 };
 
-pub const PollingState = union(enum) {
-    telegram: *channel_loop.TelegramLoopState,
-    signal: *channel_loop.SignalLoopState,
-};
+pub const PollingState = channel_loop.PollingState;
 
 pub const ChannelManager = struct {
     allocator: Allocator,
@@ -91,6 +90,7 @@ pub const ChannelManager = struct {
         return switch (state) {
             .telegram => |ls| ls.last_activity.load(.acquire),
             .signal => |ls| ls.last_activity.load(.acquire),
+            .matrix => |ls| ls.last_activity.load(.acquire),
         };
     }
 
@@ -98,6 +98,7 @@ pub const ChannelManager = struct {
         switch (state) {
             .telegram => |ls| ls.stop_requested.store(true, .release),
             .signal => |ls| ls.stop_requested.store(true, .release),
+            .matrix => |ls| ls.stop_requested.store(true, .release),
         }
     }
 
@@ -105,93 +106,43 @@ pub const ChannelManager = struct {
         switch (state) {
             .telegram => |ls| self.allocator.destroy(ls),
             .signal => |ls| self.allocator.destroy(ls),
+            .matrix => |ls| self.allocator.destroy(ls),
         }
     }
 
     fn spawnPollingThread(self: *ChannelManager, entry: *Entry, rt: *channel_loop.ChannelRuntime) !void {
-        if (std.mem.eql(u8, entry.name, "telegram")) {
-            const tg_ls = try self.allocator.create(channel_loop.TelegramLoopState);
-            errdefer self.allocator.destroy(tg_ls);
-            tg_ls.* = channel_loop.TelegramLoopState.init();
-
-            // Cast the opaque vtable pointer back to the concrete TelegramChannel
-            // so the polling loop operates on the same instance as the supervisor.
-            const tg_ptr: *telegram.TelegramChannel = @ptrCast(@alignCast(entry.channel.ptr));
-
-            const thread = try std.Thread.spawn(
-                .{ .stack_size = 512 * 1024 },
-                channel_loop.runTelegramLoop,
-                .{ self.allocator, self.config, rt, tg_ls, tg_ptr },
-            );
-            tg_ls.thread = thread;
-            entry.polling_state = .{ .telegram = tg_ls };
-            entry.thread = thread;
-            return;
-        }
-
-        if (std.mem.eql(u8, entry.name, "signal")) {
-            const sg_ls = try self.allocator.create(channel_loop.SignalLoopState);
-            errdefer self.allocator.destroy(sg_ls);
-            sg_ls.* = channel_loop.SignalLoopState.init();
-
-            // Cast the opaque vtable pointer back to the concrete SignalChannel
-            // to preserve account-specific config (account_id/http_url/account).
-            const sg_ptr: *signal_ch.SignalChannel = @ptrCast(@alignCast(entry.channel.ptr));
-
-            const thread = try std.Thread.spawn(
-                .{ .stack_size = 512 * 1024 },
-                channel_loop.runSignalLoop,
-                .{ self.allocator, self.config, rt, sg_ls, sg_ptr },
-            );
-            sg_ls.thread = thread;
-            entry.polling_state = .{ .signal = sg_ls };
-            entry.thread = thread;
-            return;
-        }
-
-        return error.UnsupportedChannel;
+        const polling_desc = channel_adapters.findPollingDescriptor(entry.name) orelse
+            return error.UnsupportedChannel;
+        const spawned = try polling_desc.spawn(self.allocator, self.config, rt, entry.channel);
+        entry.polling_state = spawned.state;
+        entry.thread = spawned.thread;
     }
 
-    fn isSignalPollingDuplicate(entries: []const Entry, current_index: usize) bool {
+    fn isPollingSourceDuplicate(
+        allocator: Allocator,
+        entries: []const Entry,
+        current_index: usize,
+        polling_desc: *const channel_adapters.PollingDescriptor,
+    ) bool {
+        const source_key_fn = polling_desc.source_key orelse return false;
         const current = entries[current_index];
-        if (!std.mem.eql(u8, current.name, "signal")) return false;
+        if (!std.mem.eql(u8, current.name, polling_desc.channel_name)) return false;
         if (current.listener_type != .polling) return false;
 
-        const current_ch: *const signal_ch.SignalChannel = @ptrCast(@alignCast(current.channel.ptr));
+        const current_source = source_key_fn(allocator, current.channel) orelse return false;
+        defer allocator.free(current_source);
+
         var i: usize = 0;
         while (i < current_index) : (i += 1) {
             const prev = entries[i];
-            if (!std.mem.eql(u8, prev.name, "signal")) continue;
+            if (!std.mem.eql(u8, prev.name, polling_desc.channel_name)) continue;
             if (prev.listener_type != .polling) continue;
             if (prev.supervised.state != .running) continue;
 
-            const prev_ch: *const signal_ch.SignalChannel = @ptrCast(@alignCast(prev.channel.ptr));
-            if (std.mem.eql(u8, prev_ch.http_url, current_ch.http_url) and
-                std.mem.eql(u8, prev_ch.account, current_ch.account))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    fn isTelegramPollingDuplicate(entries: []const Entry, current_index: usize) bool {
-        const current = entries[current_index];
-        if (!std.mem.eql(u8, current.name, "telegram")) return false;
-        if (current.listener_type != .polling) return false;
-
-        const current_ch: *const telegram.TelegramChannel = @ptrCast(@alignCast(current.channel.ptr));
-        var i: usize = 0;
-        while (i < current_index) : (i += 1) {
-            const prev = entries[i];
-            if (!std.mem.eql(u8, prev.name, "telegram")) continue;
-            if (prev.listener_type != .polling) continue;
-            if (prev.supervised.state != .running) continue;
-
-            const prev_ch: *const telegram.TelegramChannel = @ptrCast(@alignCast(prev.channel.ptr));
-            if (std.mem.eql(u8, prev_ch.bot_token, current_ch.bot_token)) {
-                return true;
-            }
+            const prev_source = source_key_fn(allocator, prev.channel) orelse continue;
+            const duplicate = std.mem.eql(u8, prev_source, current_source);
+            allocator.free(prev_source);
+            if (duplicate) return true;
         }
         return false;
     }
@@ -320,18 +271,11 @@ pub const ChannelManager = struct {
                         continue;
                     }
 
-                    if (std.mem.eql(u8, entry.name, "signal") and
-                        isSignalPollingDuplicate(self.entries.items, index))
-                    {
-                        log.warn("Skipping duplicate Signal polling source for account_id={s}", .{entry.account_id});
-                        continue;
-                    }
-
-                    if (std.mem.eql(u8, entry.name, "telegram") and
-                        isTelegramPollingDuplicate(self.entries.items, index))
-                    {
-                        log.warn("Skipping duplicate Telegram polling source for account_id={s}", .{entry.account_id});
-                        continue;
+                    if (channel_adapters.findPollingDescriptor(entry.name)) |polling_desc| {
+                        if (isPollingSourceDuplicate(self.allocator, self.entries.items, index, polling_desc)) {
+                            log.warn("Skipping duplicate {s} polling source for account_id={s}", .{ entry.name, entry.account_id });
+                            continue;
+                        }
                     }
 
                     self.spawnPollingThread(entry, self.runtime.?) catch |err| {
@@ -348,7 +292,8 @@ pub const ChannelManager = struct {
                         log.warn("Cannot start {s} gateway: no runtime available", .{entry.name});
                         continue;
                     }
-                    // Gateway-loop channels (Discord, QQ, OneBot) manage their own connections
+                    // Gateway-loop channels (Discord, Mattermost, Slack, IRC, QQ, OneBot)
+                    // manage their own connection/read loops.
                     entry.channel.start() catch |err| {
                         log.warn("Failed to start {s} gateway: {}", .{ entry.name, err });
                         continue;
@@ -511,9 +456,11 @@ pub const ChannelManager = struct {
 // Tests
 // ════════════════════════════════════════════════════════════════════════════
 
-test "PollingState has telegram and signal variants" {
+test "PollingState has telegram signal and matrix variants" {
     try std.testing.expect(@intFromEnum(@as(std.meta.Tag(PollingState), .telegram)) !=
         @intFromEnum(@as(std.meta.Tag(PollingState), .signal)));
+    try std.testing.expect(@intFromEnum(@as(std.meta.Tag(PollingState), .signal)) !=
+        @intFromEnum(@as(std.meta.Tag(PollingState), .matrix)));
 }
 
 test "ListenerType enum values distinct" {
@@ -522,7 +469,7 @@ test "ListenerType enum values distinct" {
     try std.testing.expect(@intFromEnum(ListenerType.webhook_only) != @intFromEnum(ListenerType.not_implemented));
 }
 
-test "isSignalPollingDuplicate detects same http_url and account" {
+test "isPollingSourceDuplicate detects duplicate signal source" {
     const allocator = std.testing.allocator;
 
     var sig_a = @import("channels/signal.zig").SignalChannel.init(
@@ -569,10 +516,11 @@ test "isSignalPollingDuplicate detects same http_url and account" {
         },
     };
 
-    try std.testing.expect(ChannelManager.isSignalPollingDuplicate(&entries, 1));
+    const desc = channel_adapters.findPollingDescriptor("signal").?;
+    try std.testing.expect(ChannelManager.isPollingSourceDuplicate(allocator, &entries, 1, desc));
 }
 
-test "isSignalPollingDuplicate ignores different signal account numbers" {
+test "isPollingSourceDuplicate ignores distinct signal source" {
     const allocator = std.testing.allocator;
 
     var sig_a = @import("channels/signal.zig").SignalChannel.init(
@@ -617,10 +565,11 @@ test "isSignalPollingDuplicate ignores different signal account numbers" {
         },
     };
 
-    try std.testing.expect(!ChannelManager.isSignalPollingDuplicate(&entries, 1));
+    const desc = channel_adapters.findPollingDescriptor("signal").?;
+    try std.testing.expect(!ChannelManager.isPollingSourceDuplicate(allocator, &entries, 1, desc));
 }
 
-test "isTelegramPollingDuplicate detects same bot token" {
+test "isPollingSourceDuplicate detects duplicate telegram source" {
     const allocator = std.testing.allocator;
 
     var tg_a = @import("channels/telegram.zig").TelegramChannel.init(
@@ -663,10 +612,11 @@ test "isTelegramPollingDuplicate detects same bot token" {
         },
     };
 
-    try std.testing.expect(ChannelManager.isTelegramPollingDuplicate(&entries, 1));
+    const desc = channel_adapters.findPollingDescriptor("telegram").?;
+    try std.testing.expect(ChannelManager.isPollingSourceDuplicate(allocator, &entries, 1, desc));
 }
 
-test "isTelegramPollingDuplicate ignores different bot tokens" {
+test "isPollingSourceDuplicate ignores distinct telegram source" {
     const allocator = std.testing.allocator;
 
     var tg_a = @import("channels/telegram.zig").TelegramChannel.init(
@@ -707,7 +657,8 @@ test "isTelegramPollingDuplicate ignores different bot tokens" {
         },
     };
 
-    try std.testing.expect(!ChannelManager.isTelegramPollingDuplicate(&entries, 1));
+    const desc = channel_adapters.findPollingDescriptor("telegram").?;
+    try std.testing.expect(!ChannelManager.isPollingSourceDuplicate(allocator, &entries, 1, desc));
 }
 
 test "ChannelManager init and deinit" {
@@ -788,6 +739,15 @@ test "ChannelManager collectConfiguredChannels wires listener types accounts and
     const onebot_accounts = [_]@import("config_types.zig").OneBotConfig{
         .{ .account_id = "ob-main", .url = "ws://localhost:6700" },
     };
+    const mattermost_accounts = [_]@import("config_types.zig").MattermostConfig{
+        .{
+            .account_id = "mm-main",
+            .bot_token = "mm-token",
+            .base_url = "https://chat.example.com",
+            .allow_from = &.{"user-a"},
+            .group_policy = "allowlist",
+        },
+    };
     const slack_allow = [_][]const u8{"slack-admin"};
     const slack_accounts = [_]@import("config_types.zig").SlackConfig{
         .{
@@ -812,49 +772,67 @@ test "ChannelManager collectConfiguredChannels wires listener types accounts and
             .discord = &discord_accounts,
             .qq = &qq_accounts,
             .onebot = &onebot_accounts,
+            .mattermost = &mattermost_accounts,
             .slack = &slack_accounts,
             .maixcam = &maixcam_accounts,
-            .whatsapp = .{
-                .account_id = "wa-main",
-                .access_token = "wa-access",
-                .phone_number_id = "123456",
-                .verify_token = "wa-verify",
+            .whatsapp = &[_]@import("config_types.zig").WhatsAppConfig{
+                .{
+                    .account_id = "wa-main",
+                    .access_token = "wa-access",
+                    .phone_number_id = "123456",
+                    .verify_token = "wa-verify",
+                },
             },
-            .line = .{
-                .account_id = "line-main",
-                .access_token = "line-token",
-                .channel_secret = "line-secret",
+            .line = &[_]@import("config_types.zig").LineConfig{
+                .{
+                    .account_id = "line-main",
+                    .access_token = "line-token",
+                    .channel_secret = "line-secret",
+                },
             },
-            .lark = .{
-                .account_id = "lark-main",
-                .app_id = "cli_xxx",
-                .app_secret = "secret_xxx",
+            .lark = &[_]@import("config_types.zig").LarkConfig{
+                .{
+                    .account_id = "lark-main",
+                    .app_id = "cli_xxx",
+                    .app_secret = "secret_xxx",
+                },
             },
-            .matrix = .{
-                .account_id = "mx-main",
-                .homeserver = "https://matrix.example",
-                .access_token = "mx-token",
-                .room_id = "!room:example",
+            .matrix = &[_]@import("config_types.zig").MatrixConfig{
+                .{
+                    .account_id = "mx-main",
+                    .homeserver = "https://matrix.example",
+                    .access_token = "mx-token",
+                    .room_id = "!room:example",
+                },
             },
-            .irc = .{
-                .account_id = "irc-main",
-                .host = "irc.example.net",
-                .nick = "nullclaw",
+            .irc = &[_]@import("config_types.zig").IrcConfig{
+                .{
+                    .account_id = "irc-main",
+                    .host = "irc.example.net",
+                    .nick = "nullclaw",
+                },
             },
-            .imessage = .{
-                .allow_from = &.{"user@example.com"},
-                .enabled = true,
+            .imessage = &[_]@import("config_types.zig").IMessageConfig{
+                .{
+                    .account_id = "imain",
+                    .allow_from = &.{"user@example.com"},
+                    .enabled = true,
+                },
             },
-            .email = .{
-                .account_id = "email-main",
-                .username = "bot@example.com",
-                .password = "secret",
-                .from_address = "bot@example.com",
+            .email = &[_]@import("config_types.zig").EmailConfig{
+                .{
+                    .account_id = "email-main",
+                    .username = "bot@example.com",
+                    .password = "secret",
+                    .from_address = "bot@example.com",
+                },
             },
-            .dingtalk = .{
-                .account_id = "ding-main",
-                .client_id = "ding-id",
-                .client_secret = "ding-secret",
+            .dingtalk = &[_]@import("config_types.zig").DingTalkConfig{
+                .{
+                    .account_id = "ding-main",
+                    .client_id = "ding-id",
+                    .client_secret = "ding-secret",
+                },
             },
         },
     };
@@ -870,14 +848,14 @@ test "ChannelManager collectConfiguredChannels wires listener types accounts and
 
     try mgr.collectConfiguredChannels();
 
-    try std.testing.expectEqual(@as(usize, 16), mgr.count());
-    try std.testing.expectEqual(@as(usize, 16), reg.count());
+    try std.testing.expectEqual(@as(usize, 17), mgr.count());
+    try std.testing.expectEqual(@as(usize, 17), reg.count());
 
     const entries = mgr.channelEntries();
-    try std.testing.expectEqual(@as(usize, 3), countEntriesByListenerType(entries, .polling));
-    try std.testing.expectEqual(@as(usize, 3), countEntriesByListenerType(entries, .gateway_loop));
+    try std.testing.expectEqual(@as(usize, 4), countEntriesByListenerType(entries, .polling));
+    try std.testing.expectEqual(@as(usize, 7), countEntriesByListenerType(entries, .gateway_loop));
     try std.testing.expectEqual(@as(usize, 3), countEntriesByListenerType(entries, .webhook_only));
-    try std.testing.expectEqual(@as(usize, 7), countEntriesByListenerType(entries, .send_only));
+    try std.testing.expectEqual(@as(usize, 3), countEntriesByListenerType(entries, .send_only));
     try std.testing.expectEqual(@as(usize, 0), countEntriesByListenerType(entries, .not_implemented));
 
     try std.testing.expect(findEntryByNameAccount(entries, "telegram", "main") != null);
@@ -886,6 +864,7 @@ test "ChannelManager collectConfiguredChannels wires listener types accounts and
     try std.testing.expect(findEntryByNameAccount(entries, "discord", "dc-main") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "qq", "qq-main") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "onebot", "ob-main") != null);
+    try std.testing.expect(findEntryByNameAccount(entries, "mattermost", "mm-main") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "slack", "sl-main") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "maixcam", "cam-main") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "whatsapp", "wa-main") != null);
@@ -893,7 +872,7 @@ test "ChannelManager collectConfiguredChannels wires listener types accounts and
     try std.testing.expect(findEntryByNameAccount(entries, "lark", "lark-main") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "matrix", "mx-main") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "irc", "irc-main") != null);
-    try std.testing.expect(findEntryByNameAccount(entries, "imessage", "default") != null);
+    try std.testing.expect(findEntryByNameAccount(entries, "imessage", "imain") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "email", "email-main") != null);
     try std.testing.expect(findEntryByNameAccount(entries, "dingtalk", "ding-main") != null);
 
@@ -909,12 +888,25 @@ test "ChannelManager collectConfiguredChannels wires listener types accounts and
     const onebot_ptr: *onebot.OneBotChannel = @ptrCast(@alignCast(onebot_entry.channel.ptr));
     try std.testing.expect(onebot_ptr.event_bus == &event_bus);
 
+    const mattermost_entry = findEntryByNameAccount(entries, "mattermost", "mm-main").?;
+    const mattermost_ptr: *mattermost.MattermostChannel = @ptrCast(@alignCast(mattermost_entry.channel.ptr));
+    try std.testing.expect(mattermost_ptr.bus == &event_bus);
+
+    const irc_entry = findEntryByNameAccount(entries, "irc", "irc-main").?;
+    const irc_ptr: *irc.IrcChannel = @ptrCast(@alignCast(irc_entry.channel.ptr));
+    try std.testing.expect(irc_ptr.bus == &event_bus);
+
+    const imessage_entry = findEntryByNameAccount(entries, "imessage", "imain").?;
+    const imessage_ptr: *imessage.IMessageChannel = @ptrCast(@alignCast(imessage_entry.channel.ptr));
+    try std.testing.expect(imessage_ptr.bus == &event_bus);
+
     const maixcam_entry = findEntryByNameAccount(entries, "maixcam", "cam-main").?;
     const maixcam_ptr: *maixcam.MaixCamChannel = @ptrCast(@alignCast(maixcam_entry.channel.ptr));
     try std.testing.expect(maixcam_ptr.event_bus == &event_bus);
 
     const slack_entry = findEntryByNameAccount(entries, "slack", "sl-main").?;
     const slack_ptr: *slack.SlackChannel = @ptrCast(@alignCast(slack_entry.channel.ptr));
+    try std.testing.expect(slack_ptr.bus == &event_bus);
     try std.testing.expect(slack_ptr.policy.dm == .deny);
     try std.testing.expect(slack_ptr.policy.group == .allowlist);
     try std.testing.expectEqual(@as(usize, 1), slack_ptr.policy.allowlist.len);

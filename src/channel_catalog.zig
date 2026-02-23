@@ -9,6 +9,7 @@ pub const ChannelId = enum {
     webhook,
     imessage,
     matrix,
+    mattermost,
     whatsapp,
     irc,
     lark,
@@ -41,12 +42,13 @@ pub const known_channels = [_]ChannelMeta{
     .{ .id = .cli, .key = "cli", .label = "CLI", .configured_message = "CLI enabled", .listener_mode = .none },
     .{ .id = .telegram, .key = "telegram", .label = "Telegram", .configured_message = "Telegram configured", .listener_mode = .polling },
     .{ .id = .discord, .key = "discord", .label = "Discord", .configured_message = "Discord configured", .listener_mode = .gateway_loop },
-    .{ .id = .slack, .key = "slack", .label = "Slack", .configured_message = "Slack configured", .listener_mode = .send_only },
+    .{ .id = .slack, .key = "slack", .label = "Slack", .configured_message = "Slack configured", .listener_mode = .gateway_loop },
     .{ .id = .webhook, .key = "webhook", .label = "Webhook", .configured_message = "Webhook configured", .listener_mode = .none },
-    .{ .id = .imessage, .key = "imessage", .label = "iMessage", .configured_message = "iMessage configured", .listener_mode = .send_only },
-    .{ .id = .matrix, .key = "matrix", .label = "Matrix", .configured_message = "Matrix configured", .listener_mode = .send_only },
+    .{ .id = .imessage, .key = "imessage", .label = "iMessage", .configured_message = "iMessage configured", .listener_mode = .gateway_loop },
+    .{ .id = .matrix, .key = "matrix", .label = "Matrix", .configured_message = "Matrix configured", .listener_mode = .polling },
+    .{ .id = .mattermost, .key = "mattermost", .label = "Mattermost", .configured_message = "Mattermost configured", .listener_mode = .gateway_loop },
     .{ .id = .whatsapp, .key = "whatsapp", .label = "WhatsApp", .configured_message = "WhatsApp configured", .listener_mode = .webhook_only },
-    .{ .id = .irc, .key = "irc", .label = "IRC", .configured_message = "IRC configured", .listener_mode = .send_only },
+    .{ .id = .irc, .key = "irc", .label = "IRC", .configured_message = "IRC configured", .listener_mode = .gateway_loop },
     .{ .id = .lark, .key = "lark", .label = "Lark", .configured_message = "Lark configured", .listener_mode = .webhook_only },
     .{ .id = .dingtalk, .key = "dingtalk", .label = "DingTalk", .configured_message = "DingTalk configured", .listener_mode = .send_only },
     .{ .id = .signal, .key = "signal", .label = "Signal", .configured_message = "Signal configured", .listener_mode = .polling },
@@ -64,15 +66,16 @@ pub fn configuredCount(cfg: *const Config, channel_id: ChannelId) usize {
         .discord => cfg.channels.discord.len,
         .slack => cfg.channels.slack.len,
         .webhook => if (cfg.channels.webhook != null) 1 else 0,
-        .imessage => if (cfg.channels.imessage != null) 1 else 0,
-        .matrix => if (cfg.channels.matrix != null) 1 else 0,
-        .whatsapp => if (cfg.channels.whatsapp != null) 1 else 0,
-        .irc => if (cfg.channels.irc != null) 1 else 0,
-        .lark => if (cfg.channels.lark != null) 1 else 0,
-        .dingtalk => if (cfg.channels.dingtalk != null) 1 else 0,
+        .imessage => cfg.channels.imessage.len,
+        .matrix => cfg.channels.matrix.len,
+        .mattermost => cfg.channels.mattermost.len,
+        .whatsapp => cfg.channels.whatsapp.len,
+        .irc => cfg.channels.irc.len,
+        .lark => cfg.channels.lark.len,
+        .dingtalk => cfg.channels.dingtalk.len,
         .signal => cfg.channels.signal.len,
-        .email => if (cfg.channels.email != null) 1 else 0,
-        .line => if (cfg.channels.line != null) 1 else 0,
+        .email => cfg.channels.email.len,
+        .line => cfg.channels.line.len,
         .qq => cfg.channels.qq.len,
         .onebot => cfg.channels.onebot.len,
         .maixcam => cfg.channels.maixcam.len,
@@ -162,11 +165,13 @@ test "configuredCount handles array and optional channels" {
                 .{ .account_id = "main" },
                 .{ .account_id = "backup" },
             },
-            .whatsapp = .{
-                .account_id = "main",
-                .access_token = "a",
-                .phone_number_id = "b",
-                .verify_token = "c",
+            .whatsapp = &[_]@import("config_types.zig").WhatsAppConfig{
+                .{
+                    .account_id = "main",
+                    .access_token = "a",
+                    .phone_number_id = "b",
+                    .verify_token = "c",
+                },
             },
         },
     };
@@ -212,22 +217,24 @@ test "hasRuntimeDependentChannels includes inbound listeners only" {
         .config_path = "/tmp/config.json",
         .allocator = std.testing.allocator,
         .channels = .{
-            .slack = &[_]@import("config_types.zig").SlackConfig{
-                .{ .account_id = "main", .bot_token = "tok", .app_token = "app" },
+            .imessage = &[_]@import("config_types.zig").IMessageConfig{
+                .{ .account_id = "main", .enabled = true },
             },
         },
     };
-    try std.testing.expect(!hasRuntimeDependentChannels(&cfg_send_only));
+    try std.testing.expect(hasRuntimeDependentChannels(&cfg_send_only));
 
     const cfg_webhook = Config{
         .workspace_dir = "/tmp",
         .config_path = "/tmp/config.json",
         .allocator = std.testing.allocator,
         .channels = .{
-            .line = .{
-                .account_id = "line-main",
-                .access_token = "tok",
-                .channel_secret = "sec",
+            .line = &[_]@import("config_types.zig").LineConfig{
+                .{
+                    .account_id = "line-main",
+                    .access_token = "tok",
+                    .channel_secret = "sec",
+                },
             },
         },
     };
@@ -239,5 +246,8 @@ test "findByKey finds known channels" {
     try std.testing.expect(telegram != null);
     try std.testing.expectEqual(ChannelId.telegram, telegram.?.id);
     try std.testing.expectEqualStrings("Telegram", telegram.?.label);
+    const mattermost = findByKey("mattermost");
+    try std.testing.expect(mattermost != null);
+    try std.testing.expectEqual(ChannelId.mattermost, mattermost.?.id);
     try std.testing.expect(findByKey("unknown") == null);
 }

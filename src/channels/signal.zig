@@ -46,6 +46,17 @@ const log = std.log.scoped(.signal);
 /// Prefix used to identify group targets in reply_target strings.
 pub const GROUP_TARGET_PREFIX = "group:";
 
+/// Extract a stable group peer ID from reply_target.
+/// For non-group targets returns the raw target or "unknown".
+pub fn signalGroupPeerId(reply_target: ?[]const u8) []const u8 {
+    const target = reply_target orelse "unknown";
+    if (std.mem.startsWith(u8, target, GROUP_TARGET_PREFIX)) {
+        const raw = target[GROUP_TARGET_PREFIX.len..];
+        if (raw.len > 0) return raw;
+    }
+    return target;
+}
+
 /// Health check endpoint for the signal-cli daemon.
 const SIGNAL_HEALTH_ENDPOINT = "/api/v1/check";
 
