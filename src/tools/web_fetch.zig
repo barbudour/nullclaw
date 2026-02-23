@@ -12,6 +12,10 @@ const net_security = @import("../root.zig").net_security;
 
 /// Default max chars for extracted content.
 const DEFAULT_MAX_CHARS: usize = 50_000;
+const WEB_FETCH_HEADERS = [_]std.http.Header{
+    .{ .name = "User-Agent", .value = "nullclaw/0.1 (web_fetch tool)" },
+    .{ .name = "Accept", .value = "text/html,application/json,text/plain,*/*" },
+};
 
 /// Web fetch tool — fetches URLs and extracts readable content.
 pub const WebFetchTool = struct {
@@ -41,11 +45,20 @@ pub const WebFetchTool = struct {
             return ToolResult.fail("Only http:// and https:// URLs are allowed");
         }
 
-        // SSRF protection — block local/private hosts
+        const uri = std.Uri.parse(url) catch
+            return ToolResult.fail("Invalid URL format");
+        const default_port: u16 = if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) 443 else 80;
+        const resolved_port: u16 = uri.port orelse default_port;
+
+        // SSRF protection and DNS-rebinding hardening:
+        // resolve once, validate global address, and connect directly to it.
         const host = net_security.extractHost(url) orelse
             return ToolResult.fail("Invalid URL: cannot extract host");
-        if (net_security.isLocalHost(host))
-            return ToolResult.fail("Blocked local/private host");
+        const connect_host = net_security.resolveConnectHost(allocator, host, resolved_port) catch |err| switch (err) {
+            error.LocalAddressBlocked => return ToolResult.fail("Blocked local/private host"),
+            else => return ToolResult.fail("Unable to verify host safety"),
+        };
+        defer allocator.free(connect_host);
 
         const max_chars = parseMaxCharsWithDefault(args, self.default_max_chars);
 
@@ -53,15 +66,20 @@ pub const WebFetchTool = struct {
         var client: std.http.Client = .{ .allocator = allocator };
         defer client.deinit();
 
-        const uri = std.Uri.parse(url) catch
-            return ToolResult.fail("Invalid URL format");
-
-        var req = client.request(.GET, uri, .{
-            .extra_headers = &.{
-                .{ .name = "User-Agent", .value = "nullclaw/0.1 (web_fetch tool)" },
-                .{ .name = "Accept", .value = "text/html,application/json,text/plain,*/*" },
-            },
+        const protocol: std.http.Client.Protocol = if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) .tls else .plain;
+        const authority_host = stripHostBrackets(host);
+        const connection = client.connectTcpOptions(.{
+            .host = connect_host,
+            .port = resolved_port,
+            .protocol = protocol,
+            .proxied_host = authority_host,
+            .proxied_port = resolved_port,
         }) catch |err| {
+            const msg = try std.fmt.allocPrint(allocator, "Fetch failed: {}", .{err});
+            return ToolResult{ .success = false, .output = "", .error_msg = msg };
+        };
+
+        var req = client.request(.GET, uri, buildRequestOptions(connection)) catch |err| {
             const msg = try std.fmt.allocPrint(allocator, "Fetch failed: {}", .{err});
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         };
@@ -79,7 +97,7 @@ pub const WebFetchTool = struct {
         };
 
         const status_code = @intFromEnum(response.head.status);
-        if (status_code < 200 or status_code >= 400) {
+        if (!isSuccessStatus(status_code)) {
             const msg = try std.fmt.allocPrint(allocator, "HTTP {d}", .{status_code});
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         }
@@ -120,6 +138,25 @@ fn parseMaxCharsWithDefault(args: JsonObjectMap, default: usize) usize {
     if (val_i64 < 100) return 100;
     if (val_i64 > 200_000) return 200_000;
     return @intCast(val_i64);
+}
+
+fn buildRequestOptions(connection: ?*std.http.Client.Connection) std.http.Client.RequestOptions {
+    return .{
+        .extra_headers = &WEB_FETCH_HEADERS,
+        .redirect_behavior = .unhandled,
+        .connection = connection,
+    };
+}
+
+fn isSuccessStatus(status_code: u16) bool {
+    return status_code >= 200 and status_code < 300;
+}
+
+fn stripHostBrackets(host: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, host, "[") and std.mem.endsWith(u8, host, "]")) {
+        return host[1 .. host.len - 1];
+    }
+    return host;
 }
 
 /// Convert HTML to readable text with basic markdown formatting.
@@ -446,6 +483,37 @@ test "WebFetchTool private IP blocked" {
     defer p3.deinit();
     const r3 = try wft.execute(testing.allocator, p3.value.object);
     try testing.expect(!r3.success);
+}
+
+test "WebFetchTool loopback decimal alias blocked" {
+    var wft = WebFetchTool{};
+    const parsed = try root.parseTestArgs("{\"url\":\"http://2130706433/\"}");
+    defer parsed.deinit();
+    const result = try wft.execute(testing.allocator, parsed.value.object);
+    try testing.expect(!result.success);
+    try testing.expectEqualStrings("Blocked local/private host", result.error_msg.?);
+}
+
+test "web_fetch disables automatic redirects" {
+    const opts = buildRequestOptions(null);
+    try testing.expect(opts.redirect_behavior == .unhandled);
+    try testing.expect(opts.connection == null);
+}
+
+test "web_fetch request options keep provided connection" {
+    const fake_ptr_value = @as(usize, @alignOf(std.http.Client.Connection));
+    const fake_connection: *std.http.Client.Connection = @ptrFromInt(fake_ptr_value);
+    const opts = buildRequestOptions(fake_connection);
+    try testing.expect(opts.connection != null);
+    try testing.expectEqual(@intFromPtr(fake_connection), @intFromPtr(opts.connection.?));
+}
+
+test "web_fetch treats only 2xx as success" {
+    try testing.expect(isSuccessStatus(200));
+    try testing.expect(isSuccessStatus(299));
+    try testing.expect(!isSuccessStatus(300));
+    try testing.expect(!isSuccessStatus(302));
+    try testing.expect(!isSuccessStatus(404));
 }
 
 test "htmlToText strips script and style" {
