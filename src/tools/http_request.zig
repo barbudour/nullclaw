@@ -412,6 +412,14 @@ test "http_request disables automatic redirects" {
     try std.testing.expect(opts.connection == null);
 }
 
+test "http_request request options keep provided connection" {
+    const fake_ptr_value = @as(usize, @alignOf(std.http.Client.Connection));
+    const fake_connection: *std.http.Client.Connection = @ptrFromInt(fake_ptr_value);
+    const opts = buildRequestOptions(&.{}, fake_connection);
+    try std.testing.expect(opts.connection != null);
+    try std.testing.expectEqual(@intFromPtr(fake_connection), @intFromPtr(opts.connection.?));
+}
+
 // ── execute-level tests ──────────────────────────────────────
 
 test "execute rejects missing url parameter" {

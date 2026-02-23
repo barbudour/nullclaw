@@ -500,6 +500,14 @@ test "web_fetch disables automatic redirects" {
     try testing.expect(opts.connection == null);
 }
 
+test "web_fetch request options keep provided connection" {
+    const fake_ptr_value = @as(usize, @alignOf(std.http.Client.Connection));
+    const fake_connection: *std.http.Client.Connection = @ptrFromInt(fake_ptr_value);
+    const opts = buildRequestOptions(fake_connection);
+    try testing.expect(opts.connection != null);
+    try testing.expectEqual(@intFromPtr(fake_connection), @intFromPtr(opts.connection.?));
+}
+
 test "web_fetch treats only 2xx as success" {
     try testing.expect(isSuccessStatus(200));
     try testing.expect(isSuccessStatus(299));

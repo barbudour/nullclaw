@@ -691,3 +691,17 @@ test "resolveConnectHost rejects loopback aliases" {
     try std.testing.expectError(error.LocalAddressBlocked, resolveConnectHost(std.testing.allocator, "2130706433", 80));
     try std.testing.expectError(error.LocalAddressBlocked, resolveConnectHost(std.testing.allocator, "0x7f000001", 80));
 }
+
+test "hostResolvesToLocal fails closed on resolution error" {
+    try std.testing.expect(hostResolvesToLocal(std.testing.allocator, "bad host", 80));
+}
+
+test "resolveConnectHost fails on unresolvable host" {
+    try std.testing.expectError(error.HostResolutionFailed, resolveConnectHost(std.testing.allocator, "bad host", 80));
+}
+
+test "resolveConnectHost returns literal for global ipv4" {
+    const resolved = try resolveConnectHost(std.testing.allocator, "8.8.8.8", 443);
+    defer std.testing.allocator.free(resolved);
+    try std.testing.expectEqualStrings("8.8.8.8", resolved);
+}
