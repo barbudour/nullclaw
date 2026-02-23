@@ -536,7 +536,7 @@ pub const SqliteMemory = struct {
             rc = c.sqlite3_step(stmt);
             if (rc == c.SQLITE_ROW) {
                 const score_raw = c.sqlite3_column_double(stmt.?, 5);
-                var entry = try readEntryFromRow(stmt.?, allocator);
+                var entry = try readEntryFromRowWithSessionCol(stmt.?, allocator, 6);
                 entry.score = -score_raw; // BM25 returns negative (lower = better)
                 // Filter by session_id if requested
                 if (session_id) |sid| {
@@ -628,6 +628,10 @@ pub const SqliteMemory = struct {
     // ── Utility functions ──────────────────────────────────────────
 
     fn readEntryFromRow(stmt: *c.sqlite3_stmt, allocator: std.mem.Allocator) !MemoryEntry {
+        return readEntryFromRowWithSessionCol(stmt, allocator, 5);
+    }
+
+    fn readEntryFromRowWithSessionCol(stmt: *c.sqlite3_stmt, allocator: std.mem.Allocator, session_col: c_int) !MemoryEntry {
         const id = try dupeColumnText(stmt, 0, allocator);
         errdefer allocator.free(id);
         const key = try dupeColumnText(stmt, 1, allocator);
@@ -637,7 +641,7 @@ pub const SqliteMemory = struct {
         const cat_str = try dupeColumnText(stmt, 3, allocator);
         const timestamp = try dupeColumnText(stmt, 4, allocator);
         errdefer allocator.free(timestamp);
-        const sid = try dupeColumnTextNullable(stmt, 5, allocator);
+        const sid = try dupeColumnTextNullable(stmt, session_col, allocator);
         errdefer if (sid) |s| allocator.free(s);
 
         const category = blk: {
