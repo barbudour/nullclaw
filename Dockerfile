@@ -33,7 +33,7 @@ EOF
 # ── Stage 3: Production Runtime (Alpine/musl) ────────────────
 FROM alpine:3.23 AS release
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates curl tzdata
 
 COPY --from=builder /app/zig-out/bin/nullclaw /usr/local/bin/nullclaw
 COPY --from=config /nullclaw-data /nullclaw-data

@@ -263,6 +263,7 @@ pub const ProviderHolder = union(enum) {
         allocator: std.mem.Allocator,
         provider_name: []const u8,
         api_key: ?[]const u8,
+        base_url: ?[]const u8,
     ) ProviderHolder {
         const kind = classifyProvider(provider_name);
         return switch (kind) {
@@ -272,11 +273,11 @@ pub const ProviderHolder = union(enum) {
                 if (std.mem.startsWith(u8, provider_name, "anthropic-custom:"))
                     provider_name["anthropic-custom:".len..]
                 else
-                    null,
+                    base_url,
             ) },
             .openai_provider => .{ .openai = openai.OpenAiProvider.init(allocator, api_key) },
             .gemini_provider => .{ .gemini = gemini.GeminiProvider.init(allocator, api_key) },
-            .ollama_provider => .{ .ollama = ollama.OllamaProvider.init(allocator, null) },
+            .ollama_provider => .{ .ollama = ollama.OllamaProvider.init(allocator, base_url) },
             .openrouter_provider => .{ .openrouter = openrouter.OpenRouterProvider.init(allocator, api_key) },
             .compatible_provider => blk: {
                 const url = if (std.mem.startsWith(u8, provider_name, "custom:"))
@@ -476,7 +477,7 @@ test "findCompatProvider returns correct flags" {
 
 test "fromConfig applies no_responses_fallback flag" {
     const alloc = std.testing.allocator;
-    var h = ProviderHolder.fromConfig(alloc, "glm", "key");
+    var h = ProviderHolder.fromConfig(alloc, "glm", "key", null);
     defer h.deinit();
     try std.testing.expect(h == .compatible);
     try std.testing.expect(!h.compatible.supports_responses_fallback);
@@ -484,7 +485,7 @@ test "fromConfig applies no_responses_fallback flag" {
 
 test "fromConfig applies merge_system_into_user flag" {
     const alloc = std.testing.allocator;
-    var h = ProviderHolder.fromConfig(alloc, "minimax", "key");
+    var h = ProviderHolder.fromConfig(alloc, "minimax", "key", null);
     defer h.deinit();
     try std.testing.expect(h == .compatible);
     try std.testing.expect(h.compatible.merge_system_into_user);
@@ -546,39 +547,39 @@ test "ProviderHolder tagged union has all expected fields" {
 test "ProviderHolder.fromConfig routes to correct variant" {
     const alloc = std.testing.allocator;
     // anthropic
-    var h1 = ProviderHolder.fromConfig(alloc, "anthropic", "sk-test");
+    var h1 = ProviderHolder.fromConfig(alloc, "anthropic", "sk-test", null);
     defer h1.deinit();
     try std.testing.expect(h1 == .anthropic);
     // openai
-    var h2 = ProviderHolder.fromConfig(alloc, "openai", "sk-test");
+    var h2 = ProviderHolder.fromConfig(alloc, "openai", "sk-test", null);
     defer h2.deinit();
     try std.testing.expect(h2 == .openai);
     // gemini
-    var h3 = ProviderHolder.fromConfig(alloc, "gemini", "key");
+    var h3 = ProviderHolder.fromConfig(alloc, "gemini", "key", null);
     defer h3.deinit();
     try std.testing.expect(h3 == .gemini);
     // ollama
-    var h4 = ProviderHolder.fromConfig(alloc, "ollama", null);
+    var h4 = ProviderHolder.fromConfig(alloc, "ollama", null, null);
     defer h4.deinit();
     try std.testing.expect(h4 == .ollama);
     // openrouter
-    var h5 = ProviderHolder.fromConfig(alloc, "openrouter", "sk-or-test");
+    var h5 = ProviderHolder.fromConfig(alloc, "openrouter", "sk-or-test", null);
     defer h5.deinit();
     try std.testing.expect(h5 == .openrouter);
     // compatible (groq)
-    var h6 = ProviderHolder.fromConfig(alloc, "groq", "gsk_test");
+    var h6 = ProviderHolder.fromConfig(alloc, "groq", "gsk_test", null);
     defer h6.deinit();
     try std.testing.expect(h6 == .compatible);
     // openai-codex
-    var h7 = ProviderHolder.fromConfig(alloc, "openai-codex", null);
+    var h7 = ProviderHolder.fromConfig(alloc, "openai-codex", null, null);
     defer h7.deinit();
     try std.testing.expect(h7 == .openai_codex);
     // unknown falls back to openrouter
-    var h8 = ProviderHolder.fromConfig(alloc, "nonexistent", "key");
+    var h8 = ProviderHolder.fromConfig(alloc, "nonexistent", "key", null);
     defer h8.deinit();
     try std.testing.expect(h8 == .openrouter);
     // anthropic-custom prefix
-    var h9 = ProviderHolder.fromConfig(alloc, "anthropic-custom:https://my-api.example.com", "sk-test");
+    var h9 = ProviderHolder.fromConfig(alloc, "anthropic-custom:https://my-api.example.com", "sk-test", null);
     defer h9.deinit();
     try std.testing.expect(h9 == .anthropic);
 }

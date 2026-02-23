@@ -15,17 +15,20 @@ const MemoryEntry = root.MemoryEntry;
 pub const MarkdownMemory = struct {
     workspace_dir: []const u8,
     allocator: std.mem.Allocator,
+    owns_self: bool = false,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, workspace_dir: []const u8) !Self {
         return Self{
-            .workspace_dir = workspace_dir,
+            .workspace_dir = try allocator.dupe(u8, workspace_dir),
             .allocator = allocator,
         };
     }
 
-    pub fn deinit(_: *Self) void {}
+    pub fn deinit(self: *Self) void {
+        self.allocator.free(self.workspace_dir);
+    }
 
     fn corePath(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
         return std.fmt.allocPrint(allocator, "{s}/MEMORY.md", .{self.workspace_dir});
@@ -313,6 +316,9 @@ pub const MarkdownMemory = struct {
     fn implDeinit(ptr: *anyopaque) void {
         const self_: *Self = @ptrCast(@alignCast(ptr));
         self_.deinit();
+        if (self_.owns_self) {
+            self_.allocator.destroy(self_);
+        }
     }
 
     const vtable = Memory.VTable{

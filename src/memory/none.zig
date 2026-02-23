@@ -10,6 +10,7 @@ const MemoryCategory = root.MemoryCategory;
 const MemoryEntry = root.MemoryEntry;
 
 pub const NoneMemory = struct {
+    allocator: ?std.mem.Allocator = null,
     const Self = @This();
 
     pub fn init() Self {
@@ -48,7 +49,12 @@ pub const NoneMemory = struct {
         return true;
     }
 
-    fn implDeinit(_: *anyopaque) void {}
+    fn implDeinit(ptr: *anyopaque) void {
+        const self_: *Self = @ptrCast(@alignCast(ptr));
+        if (self_.allocator) |alloc| {
+            alloc.destroy(self_);
+        }
+    }
 
     const vtable = Memory.VTable{
         .name = &implName,

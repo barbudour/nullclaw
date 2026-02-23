@@ -51,6 +51,8 @@ pub const Agent = struct {
     tools: []const Tool,
     tool_specs: []const ToolSpec,
     mem: ?Memory,
+    /// Optional session scope for memory read/write operations.
+    memory_session_id: ?[]const u8 = null,
     observer: Observer,
     model_name: []const u8,
     model_name_owned: bool = false,
@@ -190,7 +192,7 @@ pub const Agent = struct {
             // Clear stale auto-saved memories to prevent re-injection
             if (self.mem) |mem| {
                 if (mem.asSqlite()) |sqlite_mem| {
-                    sqlite_mem.clearAutoSaved() catch {};
+                    sqlite_mem.clearAutoSaved(self.memory_session_id) catch {};
                 }
             }
             return try self.allocator.dupe(u8, "Session cleared.");
@@ -278,14 +280,14 @@ pub const Agent = struct {
                 const save_key = std.fmt.allocPrint(self.allocator, "autosave_user_{d}", .{ts}) catch null;
                 if (save_key) |key| {
                     defer self.allocator.free(key);
-                    mem.store(key, user_message, .conversation, null) catch {};
+                    mem.store(key, user_message, .conversation, self.memory_session_id) catch {};
                 }
             }
         }
 
         // Enrich message with memory context (always returns owned slice; ownership → history)
         const enriched = if (self.mem) |mem|
-            try memory_loader.enrichMessage(self.allocator, mem, user_message)
+            try memory_loader.enrichMessage(self.allocator, mem, user_message, self.memory_session_id)
         else
             try self.allocator.dupe(u8, user_message);
         errdefer self.allocator.free(enriched);
@@ -547,7 +549,7 @@ pub const Agent = struct {
                         const ts = @as(u64, @intCast(std.time.timestamp()));
                         const save_key = try std.fmt.allocPrint(self.allocator, "autosave_assistant_{d}", .{ts});
                         defer self.allocator.free(save_key);
-                        mem.store(save_key, summary, .daily, null) catch {};
+                        mem.store(save_key, summary, .daily, self.memory_session_id) catch {};
                     }
                 }
 

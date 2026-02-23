@@ -263,23 +263,27 @@ pub fn createMemory(allocator: std.mem.Allocator, backend_name: []const u8, path
             const impl_ = try allocator.create(SqliteMemory);
             errdefer allocator.destroy(impl_);
             impl_.* = try SqliteMemory.init(allocator, path);
+            impl_.owns_self = true;
             return impl_.memory();
         },
         .markdown_backend => {
             const impl_ = try allocator.create(MarkdownMemory);
             errdefer allocator.destroy(impl_);
             impl_.* = try MarkdownMemory.init(allocator, std.mem.span(path));
+            impl_.owns_self = true;
             return impl_.memory();
         },
         .lucid_backend => {
             const impl_ = try allocator.create(LucidMemory);
             errdefer allocator.destroy(impl_);
             impl_.* = try LucidMemory.init(allocator, path, std.mem.span(path));
+            impl_.owns_self = true;
             return impl_.memory();
         },
         .none_backend => {
             const impl_ = try allocator.create(NoneMemory);
             impl_.* = NoneMemory.init();
+            impl_.allocator = allocator;
             return impl_.memory();
         },
         .unknown => {
@@ -287,6 +291,7 @@ pub fn createMemory(allocator: std.mem.Allocator, backend_name: []const u8, path
             const impl_ = try allocator.create(MarkdownMemory);
             errdefer allocator.destroy(impl_);
             impl_.* = try MarkdownMemory.init(allocator, std.mem.span(path));
+            impl_.owns_self = true;
             return impl_.memory();
         },
     };

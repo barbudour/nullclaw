@@ -24,7 +24,10 @@ pub const doctor = @import("doctor.zig");
 pub const service = @import("service.zig");
 pub const daemon = @import("daemon.zig");
 pub const channel_loop = @import("channel_loop.zig");
+pub const channel_manager = @import("channel_manager.zig");
+pub const channel_catalog = @import("channel_catalog.zig");
 pub const migration = @import("migration.zig");
+pub const update = @import("update.zig");
 
 // Phase 2: Agent core
 pub const agent = @import("agent.zig");
@@ -57,6 +60,9 @@ pub const auth = @import("auth.zig");
 
 // Phase 4d: Multimodal
 pub const multimodal = @import("multimodal.zig");
+
+// Phase 4e: Agent Routing
+pub const agent_routing = @import("agent_routing.zig");
 
 // Phase 5: Hardware & Integrations
 pub const hardware = @import("hardware.zig");

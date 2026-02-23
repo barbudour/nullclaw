@@ -289,7 +289,9 @@ pub fn parseCallToolResponse(allocator: Allocator, resp: []const u8) ![]const u8
 // ── McpToolWrapper — adapts MCP tool to Tool vtable ─────────────
 
 pub const McpToolWrapper = struct {
+    allocator: Allocator,
     server: *McpServer,
+    owns_server: bool,
     original_name: []const u8,
     prefixed_name: []const u8,
     desc: []const u8,
@@ -300,6 +302,7 @@ pub const McpToolWrapper = struct {
         .name = &nameImpl,
         .description = &descImpl,
         .parameters_json = &paramsImpl,
+        .deinit = &deinitImpl,
     };
 
     pub fn tool(self: *McpToolWrapper) tools_mod.Tool {
@@ -335,6 +338,21 @@ pub const McpToolWrapper = struct {
         const self: *McpToolWrapper = @ptrCast(@alignCast(ptr));
         return self.params_json;
     }
+
+    fn deinitImpl(ptr: *anyopaque, allocator: Allocator) void {
+        _ = allocator;
+        const self: *McpToolWrapper = @ptrCast(@alignCast(ptr));
+        const alloc = self.allocator;
+        if (self.owns_server) {
+            self.server.deinit();
+            alloc.destroy(self.server);
+        }
+        alloc.free(self.original_name);
+        alloc.free(self.prefixed_name);
+        alloc.free(self.desc);
+        alloc.free(self.params_json);
+        alloc.destroy(self);
+    }
 };
 
 // ── Top-level init ──────────────────────────────────────────────
@@ -344,7 +362,12 @@ pub const McpToolWrapper = struct {
 /// Errors from individual servers are logged and skipped.
 pub fn initMcpTools(allocator: Allocator, configs: []const McpServerConfig) ![]tools_mod.Tool {
     var all_tools: std.ArrayList(tools_mod.Tool) = .{};
-    errdefer all_tools.deinit(allocator);
+    errdefer {
+        for (all_tools.items) |t| {
+            t.deinit(allocator);
+        }
+        all_tools.deinit(allocator);
+    }
 
     for (configs) |cfg| {
         var server = try allocator.create(McpServer);
@@ -362,20 +385,43 @@ pub fn initMcpTools(allocator: Allocator, configs: []const McpServerConfig) ![]t
             allocator.destroy(server);
             continue;
         };
+        defer allocator.free(tool_defs);
 
-        for (tool_defs) |td| {
+        var transferred_count: usize = 0;
+        errdefer {
+            var i: usize = transferred_count;
+            while (i < tool_defs.len) : (i += 1) {
+                allocator.free(tool_defs[i].name);
+                allocator.free(tool_defs[i].description);
+                allocator.free(tool_defs[i].input_schema);
+            }
+            if (transferred_count == 0) {
+                server.deinit();
+                allocator.destroy(server);
+            }
+        }
+
+        for (tool_defs, 0..) |td, idx| {
             var wrapper = try allocator.create(McpToolWrapper);
             errdefer allocator.destroy(wrapper);
             const prefixed_name = try std.fmt.allocPrint(allocator, "mcp_{s}_{s}", .{ cfg.name, td.name });
             errdefer allocator.free(prefixed_name);
             wrapper.* = .{
+                .allocator = allocator,
                 .server = server,
+                .owns_server = idx == 0,
                 .original_name = td.name,
                 .prefixed_name = prefixed_name,
                 .desc = td.description,
                 .params_json = td.input_schema,
             };
             try all_tools.append(allocator, wrapper.tool());
+            transferred_count += 1;
+        }
+
+        if (transferred_count == 0) {
+            server.deinit();
+            allocator.destroy(server);
         }
 
         log.info("MCP server '{s}': {d} tools registered", .{ cfg.name, tool_defs.len });
@@ -472,7 +518,9 @@ test "McpToolWrapper vtable name" {
         .command = "echo",
     });
     var wrapper = McpToolWrapper{
+        .allocator = std.testing.allocator,
         .server = &server,
+        .owns_server = false,
         .original_name = "read_file",
         .prefixed_name = "mcp_fs_read_file",
         .desc = "Read a file from disk",
@@ -488,7 +536,9 @@ test "McpToolWrapper vtable description" {
         .command = "echo",
     });
     var wrapper = McpToolWrapper{
+        .allocator = std.testing.allocator,
         .server = &server,
+        .owns_server = false,
         .original_name = "read_file",
         .prefixed_name = "mcp_fs_read_file",
         .desc = "Read a file from disk",
@@ -504,7 +554,9 @@ test "McpToolWrapper vtable parameters_json" {
         .command = "echo",
     });
     var wrapper = McpToolWrapper{
+        .allocator = std.testing.allocator,
         .server = &server,
+        .owns_server = false,
         .original_name = "read_file",
         .prefixed_name = "mcp_fs_read_file",
         .desc = "Read a file",

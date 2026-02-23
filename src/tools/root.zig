@@ -129,6 +129,7 @@ pub const Tool = struct {
         name: *const fn (ptr: *anyopaque) []const u8,
         description: *const fn (ptr: *anyopaque) []const u8,
         parameters_json: *const fn (ptr: *anyopaque) []const u8,
+        deinit: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void = null,
     };
 
     pub fn execute(self: Tool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
@@ -153,6 +154,14 @@ pub const Tool = struct {
             .description = self.description(),
             .parameters_json = self.parametersJson(),
         };
+    }
+
+    /// Free the heap-allocated backing struct. Safe to call even if
+    /// the tool was not heap-allocated (deinit will be null).
+    pub fn deinit(self: Tool, allocator: std.mem.Allocator) void {
+        if (self.vtable.deinit) |deinit_fn| {
+            deinit_fn(self.ptr, allocator);
+        }
     }
 };
 
@@ -186,6 +195,12 @@ pub fn ToolVTable(comptime T: type) Tool.VTable {
                 return T.tool_params;
             }
         }.f,
+        .deinit = &struct {
+            fn f(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+                const self: *T = @ptrCast(@alignCast(ptr));
+                allocator.destroy(self);
+            }
+        }.f,
     };
 }
 
@@ -215,7 +230,12 @@ pub fn defaultToolsWithPaths(
     allowed_paths: []const []const u8,
 ) ![]Tool {
     var list: std.ArrayList(Tool) = .{};
-    errdefer list.deinit(allocator);
+    errdefer {
+        for (list.items) |t| {
+            t.deinit(allocator);
+        }
+        list.deinit(allocator);
+    }
 
     const st = try allocator.create(shell.ShellTool);
     st.* = .{ .workspace_dir = workspace_dir, .allowed_paths = allowed_paths };
@@ -258,7 +278,12 @@ pub fn allTools(
     },
 ) ![]Tool {
     var list: std.ArrayList(Tool) = .{};
-    errdefer list.deinit(allocator);
+    errdefer {
+        for (list.items) |t| {
+            t.deinit(allocator);
+        }
+        list.deinit(allocator);
+    }
 
     // Core tools with workspace_dir + allowed_paths + tools_config limits
     const tc = opts.tools_config;
@@ -379,6 +404,15 @@ pub fn allTools(
     return list.toOwnedSlice(allocator);
 }
 
+/// Free all heap-allocated tool structs and the tools slice itself.
+/// Pairs with `allTools` / `defaultTools` / `subagentTools`.
+pub fn deinitTools(allocator: std.mem.Allocator, tools: []const Tool) void {
+    for (tools) |t| {
+        t.deinit(allocator);
+    }
+    allocator.free(tools);
+}
+
 /// Create restricted tool set for subagents.
 /// Includes: shell, file_read, file_write, file_edit, git, http (if enabled).
 /// Excludes: message, spawn, delegate, schedule, memory, composio, browser —
@@ -393,7 +427,12 @@ pub fn subagentTools(
     },
 ) ![]Tool {
     var list: std.ArrayList(Tool) = .{};
-    errdefer list.deinit(allocator);
+    errdefer {
+        for (list.items) |t| {
+            t.deinit(allocator);
+        }
+        list.deinit(allocator);
+    }
 
     const st = try allocator.create(shell.ShellTool);
     st.* = .{ .workspace_dir = workspace_dir, .allowed_paths = opts.allowed_paths, .policy = opts.policy };

@@ -12,6 +12,7 @@ const std = @import("std");
 const platform = @import("platform.zig");
 const config_mod = @import("config.zig");
 const Config = config_mod.Config;
+const channel_catalog = @import("channel_catalog.zig");
 const memory_root = @import("memory/root.zig");
 const http_util = @import("http_util.zig");
 
@@ -56,7 +57,7 @@ pub const known_providers = [_]ProviderInfo{
 
     // --- Tier 2: Major cloud providers (Feb 2026 models) ---
     .{ .key = "gemini", .label = "Google Gemini", .default_model = "gemini-2.5-pro", .env_var = "GEMINI_API_KEY" },
-    .{ .key = "deepseek", .label = "DeepSeek", .default_model = "deepseek-v3.2", .env_var = "DEEPSEEK_API_KEY" },
+    .{ .key = "deepseek", .label = "DeepSeek", .default_model = "deepseek-chat", .env_var = "DEEPSEEK_API_KEY" },
     .{ .key = "groq", .label = "Groq (fast inference)", .default_model = "llama-3.3-70b-versatile", .env_var = "GROQ_API_KEY" },
 
     // --- Tier 3: OpenAI-compatible specialists ---
@@ -206,7 +207,7 @@ const gemini_fallback = [_][]const u8{
     "gemini-2.0-flash",
 };
 const deepseek_fallback = [_][]const u8{
-    "deepseek-v3.2",
+    "deepseek-chat",
     "deepseek-reasoner",
 };
 const ollama_fallback = [_][]const u8{
@@ -584,17 +585,11 @@ pub fn runChannelsOnly(allocator: std.mem.Allocator) !void {
     };
     defer cfg.deinit();
 
-    try stdout.print("  CLI:       {s}\n", .{if (cfg.channels.cli) "enabled" else "disabled"});
-    try stdout.print("  Telegram:  {s}\n", .{if (cfg.channels.telegram != null) "configured" else "not configured"});
-    try stdout.print("  Discord:   {s}\n", .{if (cfg.channels.discord != null) "configured" else "not configured"});
-    try stdout.print("  Slack:     {s}\n", .{if (cfg.channels.slack != null) "configured" else "not configured"});
-    try stdout.print("  Webhook:   {s}\n", .{if (cfg.channels.webhook != null) "configured" else "not configured"});
-    try stdout.print("  iMessage:  {s}\n", .{if (cfg.channels.imessage != null) "configured" else "not configured"});
-    try stdout.print("  Matrix:    {s}\n", .{if (cfg.channels.matrix != null) "configured" else "not configured"});
-    try stdout.print("  WhatsApp:  {s}\n", .{if (cfg.channels.whatsapp != null) "configured" else "not configured"});
-    try stdout.print("  IRC:       {s}\n", .{if (cfg.channels.irc != null) "configured" else "not configured"});
-    try stdout.print("  Lark:      {s}\n", .{if (cfg.channels.lark != null) "configured" else "not configured"});
-    try stdout.print("  DingTalk:  {s}\n", .{if (cfg.channels.dingtalk != null) "configured" else "not configured"});
+    for (channel_catalog.known_channels) |meta| {
+        var status_buf: [64]u8 = undefined;
+        const status_text = channel_catalog.statusText(&cfg, meta, &status_buf);
+        try stdout.print("  {s}: {s}\n", .{ meta.label, status_text });
+    }
     try stdout.writeAll("\nTo modify channels, edit your config file:\n");
     try stdout.print("  {s}\n", .{cfg.config_path});
     try stdout.flush();
@@ -1232,7 +1227,7 @@ test "canonicalProviderName handles aliases" {
 test "defaultModelForProvider returns known models" {
     try std.testing.expectEqualStrings("claude-opus-4-6", defaultModelForProvider("anthropic"));
     try std.testing.expectEqualStrings("gpt-5.2", defaultModelForProvider("openai"));
-    try std.testing.expectEqualStrings("deepseek-v3.2", defaultModelForProvider("deepseek"));
+    try std.testing.expectEqualStrings("deepseek-chat", defaultModelForProvider("deepseek"));
     try std.testing.expectEqualStrings("llama4", defaultModelForProvider("ollama"));
 }
 
@@ -1920,7 +1915,7 @@ test "fetchModels returns models for deepseek (no network)" {
         std.testing.allocator.free(models);
     }
     try std.testing.expect(models.len >= 2);
-    try std.testing.expectEqualStrings("deepseek-v3.2", models[0]);
+    try std.testing.expectEqualStrings("deepseek-chat", models[0]);
 }
 
 test "fetchModels returns fallback for openai without key" {
