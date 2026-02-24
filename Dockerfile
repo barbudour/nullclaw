@@ -24,7 +24,7 @@ RUN cat > /nullclaw-data/.nullclaw/config.json << 'EOF'
   "default_temperature": 0.7,
   "gateway": {
     "port": 3000,
-    "host": "[::]",
+    "host": "::",
     "allow_public_bind": true
   }
 }
@@ -51,7 +51,7 @@ ENV NULLCLAW_GATEWAY_PORT=3000
 WORKDIR /nullclaw-data
 EXPOSE 3000
 ENTRYPOINT ["nullclaw"]
-CMD ["gateway", "--port", "3000", "--host", "[::]"]
+CMD ["gateway", "--port", "3000", "--host", "::"]
 
 # Optional autonomous mode (explicit opt-in):
 #   docker build --target release-root -t nullclaw:root .
