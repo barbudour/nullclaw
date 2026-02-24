@@ -295,7 +295,7 @@ pub const TelegramChannel = struct {
     pub fn isUserAllowed(self: *const TelegramChannel, sender: []const u8) bool {
         for (self.allow_from) |a| {
             if (std.mem.eql(u8, a, "*")) return true;
-            // Strip leading "@" from allowlist entry (PicoClaw compat)
+            // Strip leading "@" from allowlist entry.
             const trimmed = if (a.len > 1 and a[0] == '@') a[1..] else a;
             // Case-insensitive: Telegram usernames are case-insensitive
             if (std.ascii.eqlIgnoreCase(trimmed, sender)) return true;
@@ -344,9 +344,23 @@ pub const TelegramChannel = struct {
             \\{"commands":[
             \\{"command":"start","description":"Start a conversation"},
             \\{"command":"new","description":"Clear history, start fresh"},
+            \\{"command":"reset","description":"Alias for /new"},
             \\{"command":"help","description":"Show available commands"},
+            \\{"command":"commands","description":"Alias for /help"},
             \\{"command":"status","description":"Show model and stats"},
-            \\{"command":"model","description":"Switch model"}
+            \\{"command":"whoami","description":"Show current session id"},
+            \\{"command":"model","description":"Switch model"},
+            \\{"command":"models","description":"Alias for /model"},
+            \\{"command":"think","description":"Set thinking level"},
+            \\{"command":"verbose","description":"Set verbose level"},
+            \\{"command":"reasoning","description":"Set reasoning output"},
+            \\{"command":"exec","description":"Set exec policy"},
+            \\{"command":"queue","description":"Set queue policy"},
+            \\{"command":"usage","description":"Set usage footer mode"},
+            \\{"command":"tts","description":"Set TTS mode"},
+            \\{"command":"stop","description":"Stop active background task"},
+            \\{"command":"restart","description":"Restart current session"},
+            \\{"command":"compact","description":"Compact context now"}
             \\]}
         ;
 
@@ -1234,7 +1248,7 @@ test "telegram api url" {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Additional Telegram Tests (ported from ZeroClaw Rust)
+// Additional Telegram tests.
 // ════════════════════════════════════════════════════════════════════════════
 
 test "telegram api url sendDocument" {

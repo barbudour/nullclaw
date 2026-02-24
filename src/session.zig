@@ -145,6 +145,27 @@ pub const SessionManager = struct {
         return session;
     }
 
+    fn slashCommandName(message: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trim(u8, message, " \t\r\n");
+        if (trimmed.len <= 1 or trimmed[0] != '/') return null;
+
+        const body = trimmed[1..];
+        var split_idx: usize = 0;
+        while (split_idx < body.len) : (split_idx += 1) {
+            const ch = body[split_idx];
+            if (ch == ':' or ch == ' ' or ch == '\t') break;
+        }
+        if (split_idx == 0) return null;
+        return body[0..split_idx];
+    }
+
+    fn slashClearsSession(message: []const u8) bool {
+        const cmd = slashCommandName(message) orelse return false;
+        return std.ascii.eqlIgnoreCase(cmd, "new") or
+            std.ascii.eqlIgnoreCase(cmd, "reset") or
+            std.ascii.eqlIgnoreCase(cmd, "restart");
+    }
+
     /// Process a message within a session context.
     /// Finds or creates the session, locks it, runs agent.turn(), returns owned response.
     pub fn processMessage(self: *SessionManager, session_key: []const u8, content: []const u8) ![]const u8 {
@@ -166,7 +187,7 @@ pub const SessionManager = struct {
         if (self.mem) |mem| {
             if (mem.asSqlite()) |sqlite_mem| {
                 const trimmed = std.mem.trim(u8, content, " \t\r\n");
-                if (std.mem.eql(u8, trimmed, "/new")) {
+                if (slashClearsSession(trimmed)) {
                     // Clear persisted messages on session reset
                     sqlite_mem.clearMessages(session_key) catch {};
                     // Clear stale auto-saved memories
@@ -495,6 +516,114 @@ test "processMessage /new clears autosave only for current session" {
     try testing.expectEqual(@as(usize, 2), try mem.count());
 
     const response = try sm.processMessage("sess-a", "/new");
+    defer testing.allocator.free(response);
+
+    const a_entry = try mem.get(testing.allocator, "autosave_user_a");
+    defer if (a_entry) |entry| entry.deinit(testing.allocator);
+    try testing.expect(a_entry == null);
+
+    const b_entry = try mem.get(testing.allocator, "autosave_user_b");
+    defer if (b_entry) |entry| entry.deinit(testing.allocator);
+    try testing.expect(b_entry != null);
+    try testing.expectEqualStrings("session b", b_entry.?.content);
+}
+
+test "processMessage /new with model clears autosave only for current session" {
+    var mock = MockProvider{ .response = "ok" };
+    const cfg = testConfig();
+
+    var sqlite_mem = try memory_mod.SqliteMemory.init(testing.allocator, ":memory:");
+    defer sqlite_mem.deinit();
+    const mem = sqlite_mem.memory();
+
+    var noop = observability.NoopObserver{};
+    var sm = SessionManager.init(
+        testing.allocator,
+        &cfg,
+        mock.provider(),
+        &.{},
+        mem,
+        noop.observer(),
+    );
+    defer sm.deinit();
+
+    try mem.store("autosave_user_a", "session a", .conversation, "sess-a");
+    try mem.store("autosave_user_b", "session b", .conversation, "sess-b");
+    try testing.expectEqual(@as(usize, 2), try mem.count());
+
+    const response = try sm.processMessage("sess-a", "/new gpt-4o-mini");
+    defer testing.allocator.free(response);
+
+    const a_entry = try mem.get(testing.allocator, "autosave_user_a");
+    defer if (a_entry) |entry| entry.deinit(testing.allocator);
+    try testing.expect(a_entry == null);
+
+    const b_entry = try mem.get(testing.allocator, "autosave_user_b");
+    defer if (b_entry) |entry| entry.deinit(testing.allocator);
+    try testing.expect(b_entry != null);
+    try testing.expectEqualStrings("session b", b_entry.?.content);
+}
+
+test "processMessage /reset clears autosave only for current session" {
+    var mock = MockProvider{ .response = "ok" };
+    const cfg = testConfig();
+
+    var sqlite_mem = try memory_mod.SqliteMemory.init(testing.allocator, ":memory:");
+    defer sqlite_mem.deinit();
+    const mem = sqlite_mem.memory();
+
+    var noop = observability.NoopObserver{};
+    var sm = SessionManager.init(
+        testing.allocator,
+        &cfg,
+        mock.provider(),
+        &.{},
+        mem,
+        noop.observer(),
+    );
+    defer sm.deinit();
+
+    try mem.store("autosave_user_a", "session a", .conversation, "sess-a");
+    try mem.store("autosave_user_b", "session b", .conversation, "sess-b");
+    try testing.expectEqual(@as(usize, 2), try mem.count());
+
+    const response = try sm.processMessage("sess-a", "/reset");
+    defer testing.allocator.free(response);
+
+    const a_entry = try mem.get(testing.allocator, "autosave_user_a");
+    defer if (a_entry) |entry| entry.deinit(testing.allocator);
+    try testing.expect(a_entry == null);
+
+    const b_entry = try mem.get(testing.allocator, "autosave_user_b");
+    defer if (b_entry) |entry| entry.deinit(testing.allocator);
+    try testing.expect(b_entry != null);
+    try testing.expectEqualStrings("session b", b_entry.?.content);
+}
+
+test "processMessage /restart clears autosave only for current session" {
+    var mock = MockProvider{ .response = "ok" };
+    const cfg = testConfig();
+
+    var sqlite_mem = try memory_mod.SqliteMemory.init(testing.allocator, ":memory:");
+    defer sqlite_mem.deinit();
+    const mem = sqlite_mem.memory();
+
+    var noop = observability.NoopObserver{};
+    var sm = SessionManager.init(
+        testing.allocator,
+        &cfg,
+        mock.provider(),
+        &.{},
+        mem,
+        noop.observer(),
+    );
+    defer sm.deinit();
+
+    try mem.store("autosave_user_a", "session a", .conversation, "sess-a");
+    try mem.store("autosave_user_b", "session b", .conversation, "sess-b");
+    try testing.expectEqual(@as(usize, 2), try mem.count());
+
+    const response = try sm.processMessage("sess-a", "/restart");
     defer testing.allocator.free(response);
 
     const a_entry = try mem.get(testing.allocator, "autosave_user_a");

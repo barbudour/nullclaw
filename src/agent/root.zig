@@ -29,6 +29,7 @@ pub const dispatcher = @import("dispatcher.zig");
 pub const compaction = @import("compaction.zig");
 pub const prompt = @import("prompt.zig");
 pub const memory_loader = @import("memory_loader.zig");
+pub const commands = @import("commands.zig");
 const ParsedToolCall = dispatcher.ParsedToolCall;
 const ToolExecutionResult = dispatcher.ToolExecutionResult;
 
@@ -47,6 +48,164 @@ const DEFAULT_MAX_HISTORY: u32 = 50;
 // ═══════════════════════════════════════════════════════════════════════════
 
 pub const Agent = struct {
+    const VerboseLevel = enum {
+        off,
+        on,
+        full,
+
+        pub fn toSlice(self: VerboseLevel) []const u8 {
+            return switch (self) {
+                .off => "off",
+                .on => "on",
+                .full => "full",
+            };
+        }
+    };
+
+    const ReasoningMode = enum {
+        off,
+        on,
+        stream,
+
+        pub fn toSlice(self: ReasoningMode) []const u8 {
+            return switch (self) {
+                .off => "off",
+                .on => "on",
+                .stream => "stream",
+            };
+        }
+    };
+
+    const UsageMode = enum {
+        off,
+        tokens,
+        full,
+        cost,
+
+        pub fn toSlice(self: UsageMode) []const u8 {
+            return switch (self) {
+                .off => "off",
+                .tokens => "tokens",
+                .full => "full",
+                .cost => "cost",
+            };
+        }
+    };
+
+    const ExecHost = enum {
+        sandbox,
+        gateway,
+        node,
+
+        pub fn toSlice(self: ExecHost) []const u8 {
+            return switch (self) {
+                .sandbox => "sandbox",
+                .gateway => "gateway",
+                .node => "node",
+            };
+        }
+    };
+
+    const ExecSecurity = enum {
+        deny,
+        allowlist,
+        full,
+
+        pub fn toSlice(self: ExecSecurity) []const u8 {
+            return switch (self) {
+                .deny => "deny",
+                .allowlist => "allowlist",
+                .full => "full",
+            };
+        }
+    };
+
+    const ExecAsk = enum {
+        off,
+        on_miss,
+        always,
+
+        pub fn toSlice(self: ExecAsk) []const u8 {
+            return switch (self) {
+                .off => "off",
+                .on_miss => "on-miss",
+                .always => "always",
+            };
+        }
+    };
+
+    const QueueMode = enum {
+        off,
+        serial,
+        latest,
+        debounce,
+
+        pub fn toSlice(self: QueueMode) []const u8 {
+            return switch (self) {
+                .off => "off",
+                .serial => "serial",
+                .latest => "latest",
+                .debounce => "debounce",
+            };
+        }
+    };
+
+    const QueueDrop = enum {
+        summarize,
+        oldest,
+        newest,
+
+        pub fn toSlice(self: QueueDrop) []const u8 {
+            return switch (self) {
+                .summarize => "summarize",
+                .oldest => "oldest",
+                .newest => "newest",
+            };
+        }
+    };
+
+    const TtsMode = enum {
+        off,
+        always,
+        inbound,
+        tagged,
+
+        pub fn toSlice(self: TtsMode) []const u8 {
+            return switch (self) {
+                .off => "off",
+                .always => "always",
+                .inbound => "inbound",
+                .tagged => "tagged",
+            };
+        }
+    };
+
+    const ActivationMode = enum {
+        mention,
+        always,
+
+        pub fn toSlice(self: ActivationMode) []const u8 {
+            return switch (self) {
+                .mention => "mention",
+                .always => "always",
+            };
+        }
+    };
+
+    const SendMode = enum {
+        on,
+        off,
+        inherit,
+
+        pub fn toSlice(self: SendMode) []const u8 {
+            return switch (self) {
+                .on => "on",
+                .off => "off",
+                .inherit => "inherit",
+            };
+        }
+    };
+
     allocator: std.mem.Allocator,
     provider: Provider,
     tools: []const Tool,
@@ -70,6 +229,35 @@ pub const Agent = struct {
     token_limit: u64 = 0,
     max_tokens: ?u32 = null,
     reasoning_effort: ?[]const u8 = null,
+    verbose_level: VerboseLevel = .off,
+    reasoning_mode: ReasoningMode = .off,
+    usage_mode: UsageMode = .off,
+    exec_host: ExecHost = .gateway,
+    exec_security: ExecSecurity = .allowlist,
+    exec_ask: ExecAsk = .on_miss,
+    exec_node_id: ?[]const u8 = null,
+    exec_node_id_owned: bool = false,
+    queue_mode: QueueMode = .off,
+    queue_debounce_ms: u32 = 0,
+    queue_cap: u32 = 0,
+    queue_drop: QueueDrop = .summarize,
+    tts_mode: TtsMode = .off,
+    tts_provider: ?[]const u8 = null,
+    tts_provider_owned: bool = false,
+    tts_limit_chars: u32 = 0,
+    tts_summary: bool = false,
+    tts_audio: bool = false,
+    pending_exec_command: ?[]const u8 = null,
+    pending_exec_command_owned: bool = false,
+    pending_exec_id: u64 = 0,
+    session_ttl_secs: ?u64 = null,
+    focus_target: ?[]const u8 = null,
+    focus_target_owned: bool = false,
+    dock_target: ?[]const u8 = null,
+    dock_target_owned: bool = false,
+    activation_mode: ActivationMode = .mention,
+    send_mode: SendMode = .inherit,
+    last_turn_usage: providers.TokenUsage = .{},
     message_timeout_secs: u64 = 0,
     compaction_keep_recent: u32 = compaction.DEFAULT_COMPACTION_KEEP_RECENT,
     compaction_max_summary_chars: u32 = compaction.DEFAULT_COMPACTION_MAX_SUMMARY_CHARS,
@@ -167,6 +355,11 @@ pub const Agent = struct {
 
     pub fn deinit(self: *Agent) void {
         if (self.model_name_owned) self.allocator.free(self.model_name);
+        if (self.exec_node_id_owned and self.exec_node_id != null) self.allocator.free(self.exec_node_id.?);
+        if (self.tts_provider_owned and self.tts_provider != null) self.allocator.free(self.tts_provider.?);
+        if (self.pending_exec_command_owned and self.pending_exec_command != null) self.allocator.free(self.pending_exec_command.?);
+        if (self.focus_target_owned and self.focus_target != null) self.allocator.free(self.focus_target.?);
+        if (self.dock_target_owned and self.dock_target != null) self.allocator.free(self.dock_target.?);
         for (self.history.items) |*msg| {
             msg.deinit(self.allocator);
         }
@@ -239,7 +432,19 @@ pub const Agent = struct {
         return null;
     }
 
-    fn formatModelStatus(self: *const Agent) ![]const u8 {
+    fn composeFinalReply(self: *const Agent, base_text: []const u8, reasoning_content: ?[]const u8, usage: providers.TokenUsage) ![]const u8 {
+        return commands.composeFinalReply(self, base_text, reasoning_content, usage);
+    }
+
+    fn isExecToolName(tool_name: []const u8) bool {
+        return commands.isExecToolName(tool_name);
+    }
+
+    fn execBlockMessage(self: *Agent, args: std.json.ObjectMap) ?[]const u8 {
+        return commands.execBlockMessage(self, args);
+    }
+
+    pub fn formatModelStatus(self: *const Agent) ![]const u8 {
         var out: std.ArrayListUnmanaged(u8) = .empty;
         errdefer out.deinit(self.allocator);
         const w = out.writer(self.allocator);
@@ -334,62 +539,7 @@ pub const Agent = struct {
     /// Handle slash commands that don't require LLM.
     /// Returns an owned response string, or null if not a slash command.
     pub fn handleSlashCommand(self: *Agent, message: []const u8) !?[]const u8 {
-        const trimmed = std.mem.trim(u8, message, " \t\r\n");
-
-        if (std.mem.eql(u8, trimmed, "/new")) {
-            self.clearHistory();
-            // Clear stale auto-saved memories to prevent re-injection
-            if (self.mem) |mem| {
-                if (mem.asSqlite()) |sqlite_mem| {
-                    sqlite_mem.clearAutoSaved(self.memory_session_id) catch {};
-                }
-            }
-            return try self.allocator.dupe(u8, "Session cleared.");
-        }
-
-        if (std.mem.eql(u8, trimmed, "/help")) {
-            return try self.allocator.dupe(u8,
-                \\Available commands:
-                \\  /new     — Clear conversation history and start fresh
-                \\  /help    — Show this help message
-                \\  /status  — Show current model, provider and session stats
-                \\  /model   — Show current model, providers and fallback chains
-                \\  /model <name> — Switch to a different model
-                \\  exit, quit — Exit interactive mode
-            );
-        }
-
-        if (std.mem.eql(u8, trimmed, "/status")) {
-            return try std.fmt.allocPrint(
-                self.allocator,
-                "Model: {s}\nHistory: {d} messages\nTokens used: {d}\nTools: {d} available",
-                .{
-                    self.model_name,
-                    self.history.items.len,
-                    self.total_tokens,
-                    self.tools.len,
-                },
-            );
-        }
-
-        if (std.mem.eql(u8, trimmed, "/model") or std.mem.startsWith(u8, trimmed, "/model ")) {
-            const arg = if (trimmed.len > "/model".len)
-                std.mem.trim(u8, trimmed["/model".len..], " \t")
-            else
-                "";
-            if (arg.len == 0 or
-                std.ascii.eqlIgnoreCase(arg, "list") or
-                std.ascii.eqlIgnoreCase(arg, "status"))
-            {
-                return try self.formatModelStatus();
-            }
-            if (self.model_name_owned) self.allocator.free(self.model_name);
-            self.model_name = try self.allocator.dupe(u8, arg);
-            self.model_name_owned = true;
-            return try std.fmt.allocPrint(self.allocator, "Switched to model: {s}", .{arg});
-        }
-
-        return null;
+        return commands.handleSlashCommand(self, message);
     }
 
     /// Execute a single conversation turn: send messages to LLM, parse tool calls,
@@ -612,12 +762,13 @@ pub const Agent = struct {
 
             // Track tokens
             self.total_tokens += response.usage.total_tokens;
+            self.last_turn_usage = response.usage;
 
             const response_text = response.contentOrEmpty();
             const use_native = response.hasToolCalls();
 
             // Determine tool calls: structured (native) first, then XML fallback.
-            // Mirrors ZeroClaw's run_tool_call_loop logic.
+            // Keep the same loop semantics used by the reference runtime.
             var parsed_calls: []ParsedToolCall = &.{};
             var parsed_text: []const u8 = "";
             var assistant_history_content: []const u8 = "";
@@ -680,10 +831,14 @@ pub const Agent = struct {
 
             if (parsed_calls.len == 0) {
                 // No tool calls — final response
-                const final_text = if (self.context_was_compacted) blk: {
+                const base_text = if (self.context_was_compacted) blk: {
                     self.context_was_compacted = false;
                     break :blk try std.fmt.allocPrint(self.allocator, "[Context compacted]\n\n{s}", .{display_text});
                 } else try self.allocator.dupe(u8, display_text);
+                errdefer self.allocator.free(base_text);
+
+                const final_text = try self.composeFinalReply(base_text, response.reasoning_content, response.usage);
+                errdefer self.allocator.free(final_text);
 
                 // Dupe from display_text directly (not from final_text) to avoid double-dupe
                 try self.history.append(self.allocator, .{
@@ -698,7 +853,7 @@ pub const Agent = struct {
                 // Auto-save assistant response
                 if (self.auto_save) {
                     if (self.mem) |mem| {
-                        const summary = if (final_text.len > 100) final_text[0..100] else final_text;
+                        const summary = if (base_text.len > 100) base_text[0..100] else base_text;
                         const ts = @as(u64, @intCast(std.time.timestamp()));
                         const save_key = try std.fmt.allocPrint(self.allocator, "autosave_assistant_{d}", .{ts});
                         defer self.allocator.free(save_key);
@@ -712,6 +867,7 @@ pub const Agent = struct {
                 // Free provider response fields (content, tool_calls, model)
                 // All borrows have been duped into final_text and history at this point.
                 self.freeResponseFields(&response);
+                self.allocator.free(base_text);
 
                 return final_text;
             }
@@ -902,6 +1058,17 @@ pub const Agent = struct {
                         };
                     },
                 };
+
+                if (isExecToolName(call.name)) {
+                    if (self.execBlockMessage(args)) |msg| {
+                        return .{
+                            .name = call.name,
+                            .output = msg,
+                            .success = false,
+                            .tool_call_id = call.tool_call_id,
+                        };
+                    }
+                }
 
                 const result = t.execute(tool_allocator, args) catch |err| {
                     return .{
@@ -1679,6 +1846,25 @@ test "slash /new clears history" {
     try std.testing.expect(!agent.has_system_prompt);
 }
 
+test "slash /reset clears history and switches model" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    try agent.history.append(allocator, .{
+        .role = .user,
+        .content = try allocator.dupe(u8, "hello"),
+    });
+
+    const response = (try agent.handleSlashCommand("/reset gpt-4o-mini")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "Session cleared.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "gpt-4o-mini") != null);
+    try std.testing.expectEqual(@as(usize, 0), agent.historyLen());
+    try std.testing.expectEqualStrings("gpt-4o-mini", agent.model_name);
+}
+
 test "slash /help returns help text" {
     const allocator = std.testing.allocator;
     var agent = try makeTestAgent(allocator);
@@ -1691,6 +1877,18 @@ test "slash /help returns help text" {
     try std.testing.expect(std.mem.indexOf(u8, response, "/help") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "/status") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "/model") != null);
+}
+
+test "slash /commands aliases to help" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/commands")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "/new") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "/commands") != null);
 }
 
 test "slash /status returns agent info" {
@@ -1706,6 +1904,19 @@ test "slash /status returns agent info" {
     try std.testing.expect(std.mem.indexOf(u8, response, "42") != null);
 }
 
+test "slash /whoami returns current session id" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+    agent.memory_session_id = "telegram:chat123";
+
+    const response = (try agent.handleSlashCommand("/whoami")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "telegram:chat123") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "test-model") != null);
+}
+
 test "slash /model switches model" {
     const allocator = std.testing.allocator;
     var agent = try makeTestAgent(allocator);
@@ -1718,6 +1929,18 @@ test "slash /model switches model" {
     try std.testing.expectEqualStrings("gpt-4o", agent.model_name);
 }
 
+test "slash /model with colon switches model" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/model: gpt-4.1-mini")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "gpt-4.1-mini") != null);
+    try std.testing.expectEqualStrings("gpt-4.1-mini", agent.model_name);
+}
+
 test "slash /model without name shows current" {
     const allocator = std.testing.allocator;
     var agent = try makeTestAgent(allocator);
@@ -1727,6 +1950,17 @@ test "slash /model without name shows current" {
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "test-model") != null);
+}
+
+test "slash /models aliases to /model" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/models list")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "Current model: test-model") != null);
 }
 
 test "slash /model list aliases to model status" {
@@ -1773,6 +2007,362 @@ test "slash /model shows provider and model fallback chains" {
         response,
         "Model chain: gpt-5.3-codex -> openrouter/anthropic/claude-sonnet-4",
     ) != null);
+}
+
+test "slash /compact with short history is a no-op" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/compact")).?;
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("Nothing to compact.", response);
+}
+
+test "slash /think updates reasoning effort" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const set_resp = (try agent.handleSlashCommand("/think high")).?;
+    defer allocator.free(set_resp);
+    try std.testing.expect(std.mem.indexOf(u8, set_resp, "high") != null);
+    try std.testing.expectEqualStrings("high", agent.reasoning_effort.?);
+
+    const off_resp = (try agent.handleSlashCommand("/think off")).?;
+    defer allocator.free(off_resp);
+    try std.testing.expect(agent.reasoning_effort == null);
+}
+
+test "slash /verbose updates verbose level" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/verbose full")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(agent.verbose_level == .full);
+}
+
+test "slash /reasoning updates reasoning mode" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/reasoning stream")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(agent.reasoning_mode == .stream);
+}
+
+test "slash /exec updates runtime exec settings" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/exec host=sandbox security=full ask=off node=node-1")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(agent.exec_host == .sandbox);
+    try std.testing.expect(agent.exec_security == .full);
+    try std.testing.expect(agent.exec_ask == .off);
+    try std.testing.expect(agent.exec_node_id != null);
+    try std.testing.expectEqualStrings("node-1", agent.exec_node_id.?);
+}
+
+test "slash /queue updates queue settings" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/queue debounce debounce:2s cap:25 drop:newest")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(agent.queue_mode == .debounce);
+    try std.testing.expectEqual(@as(u32, 2000), agent.queue_debounce_ms);
+    try std.testing.expectEqual(@as(u32, 25), agent.queue_cap);
+    try std.testing.expect(agent.queue_drop == .newest);
+}
+
+test "slash /usage updates usage mode" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/usage full")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(agent.usage_mode == .full);
+}
+
+test "slash /tts updates tts settings" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/tts always provider openai limit 1200 summary on audio off")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(agent.tts_mode == .always);
+    try std.testing.expect(agent.tts_provider != null);
+    try std.testing.expectEqualStrings("openai", agent.tts_provider.?);
+    try std.testing.expectEqual(@as(u32, 1200), agent.tts_limit_chars);
+    try std.testing.expect(agent.tts_summary);
+    try std.testing.expect(!agent.tts_audio);
+}
+
+test "slash /stop handled explicitly" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const response = (try agent.handleSlashCommand("/stop")).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "No active background task") != null);
+}
+
+test "slash /approve executes pending bash command" {
+    const allocator = std.testing.allocator;
+
+    const shell_impl = try allocator.create(tools_mod.shell.ShellTool);
+    shell_impl.* = .{ .workspace_dir = "." };
+    const shell_tool = shell_impl.tool();
+    defer shell_tool.deinit(allocator);
+
+    var noop = observability.NoopObserver{};
+    var agent = Agent{
+        .allocator = allocator,
+        .provider = undefined,
+        .tools = &.{shell_tool},
+        .tool_specs = try allocator.alloc(ToolSpec, 0),
+        .mem = null,
+        .observer = noop.observer(),
+        .model_name = "test-model",
+        .temperature = 0.7,
+        .workspace_dir = "/tmp",
+        .max_tool_iterations = 2,
+        .max_history_messages = 20,
+        .auto_save = false,
+        .history = .empty,
+    };
+    defer agent.deinit();
+
+    const exec_resp = (try agent.handleSlashCommand("/exec ask=always")).?;
+    defer allocator.free(exec_resp);
+
+    const pending_resp = (try agent.handleSlashCommand("/bash echo hello-approve")).?;
+    defer allocator.free(pending_resp);
+    try std.testing.expect(std.mem.indexOf(u8, pending_resp, "Exec approval required") != null);
+    try std.testing.expect(agent.pending_exec_command != null);
+
+    const approve_resp = (try agent.handleSlashCommand("/approve allow-once")).?;
+    defer allocator.free(approve_resp);
+    try std.testing.expect(std.mem.indexOf(u8, approve_resp, "Approved exec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, approve_resp, "hello-approve") != null);
+    try std.testing.expect(agent.pending_exec_command == null);
+}
+
+test "slash /restart clears runtime command settings" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const think_resp = (try agent.handleSlashCommand("/think high")).?;
+    defer allocator.free(think_resp);
+    const verbose_resp = (try agent.handleSlashCommand("/verbose full")).?;
+    defer allocator.free(verbose_resp);
+    const usage_resp = (try agent.handleSlashCommand("/usage full")).?;
+    defer allocator.free(usage_resp);
+    const tts_resp = (try agent.handleSlashCommand("/tts always provider test-provider")).?;
+    defer allocator.free(tts_resp);
+
+    const response = (try agent.handleSlashCommand("/restart")).?;
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("Session restarted.", response);
+    try std.testing.expect(agent.reasoning_effort == null);
+    try std.testing.expect(agent.verbose_level == .off);
+    try std.testing.expect(agent.usage_mode == .off);
+    try std.testing.expect(agent.tts_mode == .off);
+    try std.testing.expect(agent.tts_provider == null);
+}
+
+test "turn includes reasoning and usage footer when enabled" {
+    const ProviderState = struct {
+        fn chatWithSystem(_: *anyopaque, allocator: std.mem.Allocator, _: ?[]const u8, _: []const u8, _: []const u8, _: f64) anyerror![]const u8 {
+            return allocator.dupe(u8, "");
+        }
+
+        fn chat(_: *anyopaque, allocator: std.mem.Allocator, _: providers.ChatRequest, _: []const u8, _: f64) anyerror!providers.ChatResponse {
+            return .{
+                .content = try allocator.dupe(u8, "final answer"),
+                .tool_calls = &.{},
+                .usage = .{ .prompt_tokens = 4, .completion_tokens = 6, .total_tokens = 10 },
+                .model = try allocator.dupe(u8, "test-model"),
+                .reasoning_content = try allocator.dupe(u8, "thinking trace"),
+            };
+        }
+
+        fn supportsNativeTools(_: *anyopaque) bool {
+            return false;
+        }
+
+        fn getName(_: *anyopaque) []const u8 {
+            return "test";
+        }
+
+        fn deinitFn(_: *anyopaque) void {}
+    };
+
+    var state: u8 = 0;
+    const vtable = Provider.VTable{
+        .chatWithSystem = ProviderState.chatWithSystem,
+        .chat = ProviderState.chat,
+        .supportsNativeTools = ProviderState.supportsNativeTools,
+        .getName = ProviderState.getName,
+        .deinit = ProviderState.deinitFn,
+    };
+    const provider = Provider{ .ptr = @ptrCast(&state), .vtable = &vtable };
+
+    const allocator = std.testing.allocator;
+    var noop = observability.NoopObserver{};
+    var agent = Agent{
+        .allocator = allocator,
+        .provider = provider,
+        .tools = &.{},
+        .tool_specs = try allocator.alloc(ToolSpec, 0),
+        .mem = null,
+        .observer = noop.observer(),
+        .model_name = "test-model",
+        .temperature = 0.7,
+        .workspace_dir = "/tmp",
+        .max_tool_iterations = 2,
+        .max_history_messages = 20,
+        .auto_save = false,
+        .history = .empty,
+    };
+    defer agent.deinit();
+
+    const reasoning_cmd = (try agent.handleSlashCommand("/reasoning on")).?;
+    defer allocator.free(reasoning_cmd);
+    const usage_cmd = (try agent.handleSlashCommand("/usage tokens")).?;
+    defer allocator.free(usage_cmd);
+
+    const response = try agent.turn("hello");
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "Reasoning:\nthinking trace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "[usage] total_tokens=10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "final answer") != null);
+}
+
+test "exec security deny blocks shell tool execution" {
+    const allocator = std.testing.allocator;
+    const shell_impl = try allocator.create(tools_mod.shell.ShellTool);
+    shell_impl.* = .{ .workspace_dir = "." };
+    const shell_tool = shell_impl.tool();
+    defer shell_tool.deinit(allocator);
+
+    var noop = observability.NoopObserver{};
+    var agent = Agent{
+        .allocator = allocator,
+        .provider = undefined,
+        .tools = &.{shell_tool},
+        .tool_specs = try allocator.alloc(ToolSpec, 0),
+        .mem = null,
+        .observer = noop.observer(),
+        .model_name = "test-model",
+        .temperature = 0.7,
+        .workspace_dir = "/tmp",
+        .max_tool_iterations = 2,
+        .max_history_messages = 20,
+        .auto_save = false,
+        .history = .empty,
+    };
+    defer agent.deinit();
+
+    const cmd_resp = (try agent.handleSlashCommand("/exec security=deny")).?;
+    defer allocator.free(cmd_resp);
+
+    const call = ParsedToolCall{
+        .name = "shell",
+        .arguments_json = "{\"command\":\"echo hello\"}",
+        .tool_call_id = null,
+    };
+    const result = agent.executeTool(allocator, call);
+
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "security=deny") != null);
+}
+
+test "exec ask always registers pending approval from tool path" {
+    const allocator = std.testing.allocator;
+    const shell_impl = try allocator.create(tools_mod.shell.ShellTool);
+    shell_impl.* = .{ .workspace_dir = "." };
+    const shell_tool = shell_impl.tool();
+    defer shell_tool.deinit(allocator);
+
+    var noop = observability.NoopObserver{};
+    var agent = Agent{
+        .allocator = allocator,
+        .provider = undefined,
+        .tools = &.{shell_tool},
+        .tool_specs = try allocator.alloc(ToolSpec, 0),
+        .mem = null,
+        .observer = noop.observer(),
+        .model_name = "test-model",
+        .temperature = 0.7,
+        .workspace_dir = "/tmp",
+        .max_tool_iterations = 2,
+        .max_history_messages = 20,
+        .auto_save = false,
+        .history = .empty,
+    };
+    defer agent.deinit();
+
+    const cmd_resp = (try agent.handleSlashCommand("/exec ask=always")).?;
+    defer allocator.free(cmd_resp);
+
+    const call = ParsedToolCall{
+        .name = "shell",
+        .arguments_json = "{\"command\":\"echo hello\"}",
+        .tool_call_id = null,
+    };
+    const result = agent.executeTool(allocator, call);
+
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "approval required") != null);
+    try std.testing.expect(agent.pending_exec_command != null);
+    try std.testing.expectEqualStrings("echo hello", agent.pending_exec_command.?);
+}
+
+test "slash additional commands are handled" {
+    const allocator = std.testing.allocator;
+    var agent = try makeTestAgent(allocator);
+    defer agent.deinit();
+
+    const cmd_list = [_][]const u8{
+        "/allowlist",
+        "/elevated full",
+        "/dock-telegram",
+        "/bash echo hi",
+        "/approve",
+        "/poll",
+        "/subagents",
+        "/config get model",
+        "/skill list",
+    };
+
+    for (cmd_list) |cmd| {
+        const response_opt = try agent.handleSlashCommand(cmd);
+        try std.testing.expect(response_opt != null);
+        const response = response_opt.?;
+        try std.testing.expect(response.len > 0);
+        allocator.free(response);
+    }
 }
 
 test "non-slash message returns null" {
