@@ -32,6 +32,7 @@ pub const SlackChannel = struct {
     bus: ?*bus_mod.Bus = null,
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     connected: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    socket_fallback_to_polling: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     poll_thread: ?std.Thread = null,
     socket_thread: ?std.Thread = null,
     ws_fd: std.atomic.Value(SocketFd) = std.atomic.Value(SocketFd).init(invalid_socket),
@@ -41,10 +42,12 @@ pub const SlackChannel = struct {
     pub const DEFAULT_WEBHOOK_PATH = "/slack/events";
     pub const RECONNECT_DELAY_NS: u64 = 5 * std.time.ns_per_s;
     pub const POLL_INTERVAL_SECS: u64 = 3;
+    pub const POLL_THREAD_STACK_SIZE: usize = 256 * 1024;
     pub const SOCKET_THREAD_STACK_SIZE: usize = switch (builtin.cpu.arch) {
         .aarch64, .arm => 1024 * 1024,
         else => 256 * 1024,
     };
+    pub const SOCKET_FAILURE_FALLBACK_THRESHOLD: u32 = 3;
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -406,6 +409,50 @@ pub const SlackChannel = struct {
         }
     }
 
+    fn hasValidAppToken(self: *const SlackChannel) bool {
+        const app_token = self.app_token orelse return false;
+        return std.mem.trim(u8, app_token, " \t\r\n").len > 0;
+    }
+
+    fn hasPollingTargets(self: *const SlackChannel) bool {
+        const channel_ids = self.channel_id orelse return false;
+        var it = std.mem.splitScalar(u8, channel_ids, ',');
+        while (it.next()) |raw_channel_id| {
+            if (std.mem.trim(u8, raw_channel_id, " \t\r\n").len > 0) return true;
+        }
+        return false;
+    }
+
+    fn shouldUsePollingFallbackForSocketStart(self: *const SlackChannel) bool {
+        if (!self.hasPollingTargets()) return false;
+        if (self.socket_fallback_to_polling.load(.acquire)) return true;
+        return !self.hasValidAppToken();
+    }
+
+    fn startPollingThread(self: *SlackChannel) !void {
+        if (self.poll_thread != null) return;
+        if (!self.hasPollingTargets()) return error.SlackChannelIdRequired;
+        self.poll_thread = try std.Thread.spawn(.{ .stack_size = POLL_THREAD_STACK_SIZE }, pollLoop, .{self});
+    }
+
+    fn activatePollingFallback(self: *SlackChannel, reason: []const u8) bool {
+        if (!self.running.load(.acquire)) return false;
+        if (!self.hasPollingTargets()) {
+            log.warn("Slack fallback to polling skipped ({s}): no channel_id configured", .{reason});
+            return false;
+        }
+
+        self.socket_fallback_to_polling.store(true, .release);
+        self.connected.store(false, .release);
+        self.startPollingThread() catch |err| {
+            log.err("Slack fallback to polling failed: {}", .{err});
+            return false;
+        };
+
+        log.warn("Slack switched to polling fallback: {s}", .{reason});
+        return true;
+    }
+
     fn componentAsSlice(component: std.Uri.Component) []const u8 {
         return switch (component) {
             .raw => |v| v,
@@ -545,13 +592,22 @@ pub const SlackChannel = struct {
     }
 
     fn socketLoop(self: *SlackChannel) void {
+        var consecutive_socket_failures: u32 = 0;
         while (self.running.load(.acquire)) {
             self.runSocketOnce() catch |err| {
                 if (err != error.SlackAppTokenRequired) {
                     log.warn("Slack socket cycle failed: {}", .{err});
                 }
+                consecutive_socket_failures +|= 1;
+
+                const should_fallback = err == error.SlackAppTokenRequired or
+                    consecutive_socket_failures >= SOCKET_FAILURE_FALLBACK_THRESHOLD;
+                if (should_fallback and self.activatePollingFallback(@errorName(err))) {
+                    return;
+                }
             };
             if (!self.running.load(.acquire)) break;
+            consecutive_socket_failures = 0;
 
             var slept: u64 = 0;
             while (slept < RECONNECT_DELAY_NS and self.running.load(.acquire)) {
@@ -642,7 +698,17 @@ pub const SlackChannel = struct {
 
         switch (self.mode) {
             .socket => {
-                if (self.app_token == null) return error.SlackAppTokenRequired;
+                if (self.shouldUsePollingFallbackForSocketStart()) {
+                    const fallback_reason: []const u8 = if (self.socket_fallback_to_polling.load(.acquire))
+                        "sticky fallback flag"
+                    else
+                        "missing/empty app_token";
+                    if (!self.activatePollingFallback(fallback_reason)) {
+                        return error.SlackAppTokenRequired;
+                    }
+                    return;
+                }
+                if (!self.hasValidAppToken()) return error.SlackAppTokenRequired;
                 self.socket_thread = try std.Thread.spawn(.{ .stack_size = SOCKET_THREAD_STACK_SIZE }, socketLoop, .{self});
             },
             .http => {
@@ -676,6 +742,7 @@ pub const SlackChannel = struct {
             t.join();
             self.poll_thread = null;
         }
+        self.socket_fallback_to_polling.store(false, .release);
         if (self.bot_user_id) |uid| {
             self.allocator.free(uid);
             self.bot_user_id = null;
@@ -975,6 +1042,27 @@ test "slack socket thread stack size is architecture-aware" {
     } else {
         try std.testing.expectEqual(@as(usize, 256 * 1024), SlackChannel.SOCKET_THREAD_STACK_SIZE);
     }
+}
+
+test "slack fallback to polling when app token is missing and polling targets exist" {
+    var ch = SlackChannel.init(std.testing.allocator, "tok", null, "C123", &.{});
+    try std.testing.expect(ch.shouldUsePollingFallbackForSocketStart());
+}
+
+test "slack fallback to polling when app token is empty and polling targets exist" {
+    var ch = SlackChannel.init(std.testing.allocator, "tok", "   ", "C123", &.{});
+    try std.testing.expect(ch.shouldUsePollingFallbackForSocketStart());
+}
+
+test "slack does not fallback to polling without channel targets" {
+    var ch = SlackChannel.init(std.testing.allocator, "tok", null, null, &.{});
+    try std.testing.expect(!ch.shouldUsePollingFallbackForSocketStart());
+}
+
+test "slack sticky fallback flag keeps polling mode when targets exist" {
+    var ch = SlackChannel.init(std.testing.allocator, "tok", "xapp-valid", "C123", &.{});
+    ch.socket_fallback_to_polling.store(true, .release);
+    try std.testing.expect(ch.shouldUsePollingFallbackForSocketStart());
 }
 
 test "slack channel user allowed wildcard" {
