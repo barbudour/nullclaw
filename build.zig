@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const app_version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "2026.2.23";
+    const app_version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "2026.2.24";
 
     const sqlite3_dep = b.dependency("sqlite3", .{
         .target = target,
