@@ -37,6 +37,7 @@ const builtin = @import("builtin");
 const root = @import("root.zig");
 const config_types = @import("../config_types.zig");
 const sse_client = @import("../sse_client.zig");
+const platform = @import("../platform.zig");
 
 const log = std.log.scoped(.signal);
 
@@ -418,12 +419,14 @@ pub const SignalChannel = struct {
     /// Build JSON-RPC body for a send or sendTyping call.
     ///
     /// Returns caller-owned JSON body string.
+    /// If attachments is non-empty, includes them in the JSON-RPC params.
     pub fn buildRpcBody(
         self: *const SignalChannel,
         allocator: std.mem.Allocator,
         method: []const u8,
         target: RecipientTarget,
         message: ?[]const u8,
+        attachments: []const []const u8,
     ) ![]u8 {
         var body: std.ArrayListUnmanaged(u8) = .empty;
         errdefer body.deinit(allocator);
@@ -453,21 +456,199 @@ pub const SignalChannel = struct {
             try root.json_util.appendJsonString(&body, allocator, msg);
         }
 
+        if (attachments.len > 0) {
+            try body.appendSlice(allocator, ",\"attachments\":[");
+            for (attachments, 0..) |att, i| {
+                if (i > 0) try body.appendSlice(allocator, ",");
+                try root.json_util.appendJsonString(&body, allocator, att);
+            }
+            try body.appendSlice(allocator, "]");
+        }
+
         try body.appendSlice(allocator, "},\"id\":\"1\"}");
 
         return try body.toOwnedSlice(allocator);
     }
 
+    /// Expand ~ to home directory and resolve to absolute path.
+    /// If file doesn't exist or path is relative, return as-is (let signal-cli validate).
+    fn resolveAttachmentPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+        if (path.len > 0 and path[0] == '~') {
+            if (path.len == 1 or path[1] == '/') {
+                const home = try platform.getHomeDir(allocator);
+                defer allocator.free(home);
+                if (path.len == 1) {
+                    return try allocator.dupe(u8, home);
+                }
+                return try std.fs.path.join(allocator, &.{ home, path[2..] });
+            }
+        }
+        if (std.fs.path.isAbsolute(path)) {
+            return try allocator.dupe(u8, path);
+        }
+        // Try to resolve relative path, but if it fails (file doesn't exist),
+        // just return the path as-is and let signal-cli handle the error
+        return std.fs.cwd().realpathAlloc(allocator, path) catch try allocator.dupe(u8, path);
+    }
+
+    /// Parse [IMAGE:path] markers from message text.
+    /// Returns extracted image paths and remaining text with markers removed.
+    pub fn parseImageMarkers(allocator: std.mem.Allocator, text: []const u8) !struct { paths: [][]const u8, remaining: []const u8 } {
+        var paths_list: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (paths_list.items) |p| allocator.free(p);
+            paths_list.deinit(allocator);
+        }
+
+        var remaining: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer remaining.deinit(allocator);
+
+        var cursor: usize = 0;
+        while (cursor < text.len) {
+            const open_pos = std.mem.indexOfPos(u8, text, cursor, "[IMAGE:") orelse {
+                try remaining.appendSlice(allocator, text[cursor..]);
+                break;
+            };
+
+            // Trim trailing whitespace before the marker
+            const before = std.mem.trimRight(u8, text[cursor..open_pos], " \t\n\r");
+            try remaining.appendSlice(allocator, before);
+
+            const close_pos = std.mem.indexOfPos(u8, text, open_pos + 7, "]") orelse {
+                try remaining.appendSlice(allocator, text[open_pos..]);
+                break;
+            };
+
+            const path = text[open_pos + 7 .. close_pos];
+            if (path.len > 0) {
+                const path_owned = try allocator.dupe(u8, path);
+                errdefer allocator.free(path_owned);
+                try paths_list.append(allocator, path_owned);
+                cursor = close_pos + 1;
+            } else {
+                try remaining.appendSlice(allocator, text[open_pos .. close_pos + 1]);
+                cursor = close_pos + 1;
+            }
+        }
+
+        const trimmed = std.mem.trim(u8, remaining.items, " \t\n\r");
+        const remaining_owned = try allocator.dupe(u8, trimmed);
+        remaining.deinit(allocator);
+
+        return .{
+            .paths = try paths_list.toOwnedSlice(allocator),
+            .remaining = remaining_owned,
+        };
+    }
+
     /// Send a message via JSON-RPC to the signal-cli daemon.
-    pub fn sendMessage(self: *SignalChannel, target_str: []const u8, message: []const u8) !void {
+    /// Parses [IMAGE:path] markers from message text and sends as attachments.
+    pub fn sendMessage(self: *SignalChannel, target_str: []const u8, message: []const u8, media: []const []const u8) !void {
         if (builtin.is_test) return;
 
         const target = parseRecipientTarget(target_str);
 
-        // Split long messages.
-        var iter = root.splitMessage(message, MAX_MESSAGE_LEN);
+        // Parse [IMAGE:path] markers from message text
+        const parsed = try parseImageMarkers(self.allocator, message);
+        defer {
+            for (parsed.paths) |p| self.allocator.free(p);
+            self.allocator.free(parsed.paths);
+            self.allocator.free(parsed.remaining);
+        }
+
+        // Combine explicitly passed media with parsed markers
+        var all_media: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (all_media.items) |m| self.allocator.free(m);
+            all_media.deinit(self.allocator);
+        }
+
+        // Add explicitly passed media first (convert to absolute paths)
+        for (media) |m| {
+            const abs_path = try resolveAttachmentPath(self.allocator, m);
+            try all_media.append(self.allocator, abs_path);
+        }
+
+        // Add parsed image paths (avoid duplicates, convert to absolute)
+        for (parsed.paths) |p| {
+            const abs_path = try resolveAttachmentPath(self.allocator, p);
+            var found = false;
+            for (all_media.items) |m| {
+                if (std.mem.eql(u8, m, abs_path)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try all_media.append(self.allocator, abs_path);
+            } else {
+                self.allocator.free(abs_path);
+            }
+        }
+
+        const final_media = try all_media.toOwnedSlice(self.allocator);
+        defer {
+            for (final_media) |m| self.allocator.free(m);
+            self.allocator.free(final_media);
+        }
+
+        // If no text but have attachments, send each with full path as message
+        if (final_media.len > 0 and parsed.remaining.len == 0) {
+            for (final_media) |att| {
+                const rpc_body = try self.buildRpcBody(self.allocator, "send", target, att, &.{att});
+                defer self.allocator.free(rpc_body);
+
+                var url_buf: [1024]u8 = undefined;
+                const url = try self.rpcUrl(&url_buf);
+
+                const resp = root.http_util.curlPost(self.allocator, url, rpc_body, &.{}) catch |err| {
+                    log.warn("Signal RPC send failed: {}", .{err});
+                    return err;
+                };
+                self.allocator.free(resp);
+            }
+            return;
+        }
+
+        // If we have both text and attachments, send text first then attachment with path
+        if (final_media.len > 0 and parsed.remaining.len > 0) {
+            // Send text message first (no attachments)
+            var iter = root.splitMessage(parsed.remaining, MAX_MESSAGE_LEN);
+            while (iter.next()) |chunk| {
+                const rpc_body = try self.buildRpcBody(self.allocator, "send", target, chunk, &.{});
+                defer self.allocator.free(rpc_body);
+
+                var url_buf: [1024]u8 = undefined;
+                const url = try self.rpcUrl(&url_buf);
+
+                const resp = root.http_util.curlPost(self.allocator, url, rpc_body, &.{}) catch |err| {
+                    log.warn("Signal RPC send failed: {}", .{err});
+                    return err;
+                };
+                self.allocator.free(resp);
+            }
+
+            // Then send attachments with path as message
+            for (final_media) |att| {
+                const rpc_body = try self.buildRpcBody(self.allocator, "send", target, att, &.{att});
+                defer self.allocator.free(rpc_body);
+
+                var url_buf: [1024]u8 = undefined;
+                const url = try self.rpcUrl(&url_buf);
+
+                const resp = root.http_util.curlPost(self.allocator, url, rpc_body, &.{}) catch |err| {
+                    log.warn("Signal RPC send failed: {}", .{err});
+                    return err;
+                };
+                self.allocator.free(resp);
+            }
+            return;
+        }
+
+        // Text only (no attachments)
+        var iter = root.splitMessage(parsed.remaining, MAX_MESSAGE_LEN);
         while (iter.next()) |chunk| {
-            const rpc_body = try self.buildRpcBody(self.allocator, "send", target, chunk);
+            const rpc_body = try self.buildRpcBody(self.allocator, "send", target, chunk, final_media);
             defer self.allocator.free(rpc_body);
 
             var url_buf: [1024]u8 = undefined;
@@ -486,7 +667,7 @@ pub const SignalChannel = struct {
         if (builtin.is_test) return;
 
         const target = parseRecipientTarget(target_str);
-        const rpc_body = self.buildRpcBody(self.allocator, "sendTyping", target, null) catch return;
+        const rpc_body = self.buildRpcBody(self.allocator, "sendTyping", target, null, &.{}) catch return;
         defer self.allocator.free(rpc_body);
 
         var url_buf: [1024]u8 = undefined;
@@ -757,9 +938,9 @@ pub const SignalChannel = struct {
         self.sse_buffer.deinit(self.allocator);
     }
 
-    fn vtableSend(ptr: *anyopaque, target: []const u8, message: []const u8, _: []const []const u8) anyerror!void {
+    fn vtableSend(ptr: *anyopaque, target: []const u8, message: []const u8, media: []const []const u8) anyerror!void {
         const self: *SignalChannel = @ptrCast(@alignCast(ptr));
-        try self.sendMessage(target, message);
+        try self.sendMessage(target, message, media);
     }
 
     fn vtableName(ptr: *anyopaque) []const u8 {
@@ -1294,7 +1475,7 @@ test "build rpc body direct with message" {
         true,
         true,
     );
-    const body = try ch.buildRpcBody(std.testing.allocator, "send", .{ .direct = "+5555555555" }, "Hello!");
+    const body = try ch.buildRpcBody(std.testing.allocator, "send", .{ .direct = "+5555555555" }, "Hello!", &.{});
     defer std.testing.allocator.free(body);
     // Verify key fields are present.
     try std.testing.expect(std.mem.indexOf(u8, body, "\"jsonrpc\":\"2.0\"") != null);
@@ -1316,7 +1497,7 @@ test "build rpc body direct without message" {
         true,
         true,
     );
-    const body = try ch.buildRpcBody(std.testing.allocator, "sendTyping", .{ .direct = "+5555555555" }, null);
+    const body = try ch.buildRpcBody(std.testing.allocator, "sendTyping", .{ .direct = "+5555555555" }, null, &.{});
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"recipient\":[\"+5555555555\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"account\":\"+1234567890\"") != null);
@@ -1334,7 +1515,7 @@ test "build rpc body group with message" {
         true,
         true,
     );
-    const body = try ch.buildRpcBody(std.testing.allocator, "send", .{ .group = "abc123" }, "Group msg");
+    const body = try ch.buildRpcBody(std.testing.allocator, "send", .{ .group = "abc123" }, "Group msg", &.{});
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"groupId\":\"abc123\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"account\":\"+1234567890\"") != null);
@@ -1353,7 +1534,7 @@ test "build rpc body group without message" {
         true,
         true,
     );
-    const body = try ch.buildRpcBody(std.testing.allocator, "sendTyping", .{ .group = "abc123" }, null);
+    const body = try ch.buildRpcBody(std.testing.allocator, "sendTyping", .{ .group = "abc123" }, null, &.{});
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"groupId\":\"abc123\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"account\":\"+1234567890\"") != null);
@@ -1371,11 +1552,48 @@ test "build rpc body uuid direct target" {
         true,
         true,
     );
-    const body = try ch.buildRpcBody(std.testing.allocator, "send", .{ .direct = uuid }, "hi");
+    const body = try ch.buildRpcBody(std.testing.allocator, "send", .{ .direct = uuid }, "hi", &.{});
     defer std.testing.allocator.free(body);
     // Verify UUID is in recipient array.
     const expected = "\"recipient\":[\"" ++ uuid ++ "\"]";
     try std.testing.expect(std.mem.indexOf(u8, body, expected) != null);
+}
+
+test "build rpc body with attachments" {
+    const ch = SignalChannel.init(
+        std.testing.allocator,
+        "http://127.0.0.1:8686",
+        "+1234567890",
+        &.{},
+        &.{},
+        true,
+        true,
+    );
+    const attachments = &[_][]const u8{ "/path/to/image.png", "/path/to/doc.pdf" };
+    const body = try ch.buildRpcBody(std.testing.allocator, "send", .{ .direct = "+5555555555" }, "Check this!", attachments);
+    defer std.testing.allocator.free(body);
+    // Verify attachments array is present.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"attachments\":[\"/path/to/image.png\",\"/path/to/doc.pdf\"]") != null);
+    // Verify message is still present.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"message\":\"Check this!\"") != null);
+    // Verify recipient is present.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"recipient\":[\"+5555555555\"]") != null);
+}
+
+test "build rpc body with single attachment" {
+    const ch = SignalChannel.init(
+        std.testing.allocator,
+        "http://127.0.0.1:8686",
+        "+1234567890",
+        &.{},
+        &.{},
+        true,
+        true,
+    );
+    const attachments = &[_][]const u8{"/tmp/photo.jpg"};
+    const body = try ch.buildRpcBody(std.testing.allocator, "send", .{ .direct = "+5555555555" }, "Photo!", attachments);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"attachments\":[\"/tmp/photo.jpg\"]") != null);
 }
 
 // ── Process Envelope Tests ──────────────────────────────────────────

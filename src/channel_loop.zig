@@ -375,7 +375,7 @@ pub fn runSignalLoop(
                     else => "An error occurred. Try again.",
                 };
                 if (msg.reply_target) |target| {
-                    sg_ptr.sendMessage(target, err_msg) catch |send_err| log.err("failed to send signal error reply: {}", .{send_err});
+                    sg_ptr.sendMessage(target, err_msg, &.{}) catch |send_err| log.err("failed to send signal error reply: {}", .{send_err});
                 }
                 continue;
             };
@@ -383,7 +383,7 @@ pub fn runSignalLoop(
 
             // Reply on Signal
             if (msg.reply_target) |target| {
-                sg_ptr.sendMessage(target, reply) catch |err| {
+                sg_ptr.sendMessage(target, reply, &.{}) catch |err| {
                     log.warn("Signal send error: {}", .{err});
                 };
             }
