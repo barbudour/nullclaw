@@ -259,6 +259,36 @@ pub const GeminiProvider = struct {
         }
     }
 
+    /// Build the streamGenerateContent URL for SSE streaming.
+    pub fn buildStreamUrl(allocator: std.mem.Allocator, model: []const u8, auth: GeminiAuth) ![]const u8 {
+        const model_name = if (std.mem.startsWith(u8, model, "models/"))
+            model
+        else
+            try std.fmt.allocPrint(allocator, "models/{s}", .{model});
+
+        if (auth.isApiKey()) {
+            const url = try std.fmt.allocPrint(
+                allocator,
+                "{s}/{s}:streamGenerateContent?key={s}&alt=sse",
+                .{ BASE_URL, model_name, auth.credential() },
+            );
+            if (!std.mem.startsWith(u8, model, "models/")) {
+                allocator.free(@constCast(model_name));
+            }
+            return url;
+        } else {
+            const url = try std.fmt.allocPrint(
+                allocator,
+                "{s}/{s}:streamGenerateContent?alt=sse",
+                .{ BASE_URL, model_name },
+            );
+            if (!std.mem.startsWith(u8, model, "models/")) {
+                allocator.free(@constCast(model_name));
+            }
+            return url;
+        }
+    }
+
     /// Build a Gemini generateContent request body.
     pub fn buildRequestBody(
         allocator: std.mem.Allocator,
@@ -310,6 +340,183 @@ pub const GeminiProvider = struct {
         return error.NoResponseContent;
     }
 
+    /// Result of parsing a single Gemini SSE line.
+    pub const GeminiSseResult = union(enum) {
+        /// Text delta content (owned, caller frees).
+        delta: []const u8,
+        /// Stream is complete (connection closed).
+        done: void,
+        /// Line should be skipped (empty, comment, or no content).
+        skip: void,
+    };
+
+    /// Parse a single SSE line in Gemini streaming format.
+    ///
+    /// Handles:
+    /// - `data: {JSON}` → extracts `candidates[0].content.parts[0].text` → `.delta`
+    /// - Empty lines, comments (`:`) → `.skip`
+    /// - No `[DONE]` sentinel - stream ends when connection closes
+    pub fn parseGeminiSseLine(allocator: std.mem.Allocator, line: []const u8) !GeminiSseResult {
+        const trimmed = std.mem.trimRight(u8, line, "\r");
+
+        if (trimmed.len == 0) return .skip;
+        if (trimmed[0] == ':') return .skip;
+
+        const prefix = "data: ";
+        if (!std.mem.startsWith(u8, trimmed, prefix)) return .skip;
+
+        const data = trimmed[prefix.len..];
+
+        const content = try extractGeminiDelta(allocator, data) orelse return .skip;
+        return .{ .delta = content };
+    }
+
+    /// Extract `candidates[0].content.parts[0].text` from a Gemini SSE JSON payload.
+    /// Returns owned slice or null if no content found.
+    pub fn extractGeminiDelta(allocator: std.mem.Allocator, json_str: []const u8) !?[]const u8 {
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch
+            return error.InvalidSseJson;
+        defer parsed.deinit();
+
+        const obj = parsed.value.object;
+        const candidates = obj.get("candidates") orelse return null;
+        if (candidates != .array or candidates.array.items.len == 0) return null;
+
+        const first = candidates.array.items[0];
+        if (first != .object) return null;
+
+        const content = first.object.get("content") orelse return null;
+        if (content != .object) return null;
+
+        const parts = content.object.get("parts") orelse return null;
+        if (parts != .array or parts.array.items.len == 0) return null;
+
+        const first_part = parts.array.items[0];
+        if (first_part != .object) return null;
+
+        const text = first_part.object.get("text") orelse return null;
+        if (text != .string) return null;
+        if (text.string.len == 0) return null;
+
+        return try allocator.dupe(u8, text.string);
+    }
+
+    /// Run curl in SSE streaming mode for Gemini and parse output line by line.
+    ///
+    /// Spawns `curl -s --no-buffer` and reads stdout incrementally.
+    /// For each SSE delta, calls `callback(ctx, chunk)`.
+    /// Returns accumulated result after stream completes.
+    /// Stream ends when curl connection closes (no [DONE] sentinel).
+    pub fn curlStreamGemini(
+        allocator: std.mem.Allocator,
+        url: []const u8,
+        body: []const u8,
+        headers: []const []const u8,
+        callback: root.StreamCallback,
+        ctx: *anyopaque,
+    ) !root.StreamChatResult {
+        // Build argv on stack (max 32 args)
+        var argv_buf: [32][]const u8 = undefined;
+        var argc: usize = 0;
+
+        argv_buf[argc] = "curl";
+        argc += 1;
+        argv_buf[argc] = "-s";
+        argc += 1;
+        argv_buf[argc] = "--no-buffer";
+        argc += 1;
+        argv_buf[argc] = "-X";
+        argc += 1;
+        argv_buf[argc] = "POST";
+        argc += 1;
+        argv_buf[argc] = "-H";
+        argc += 1;
+        argv_buf[argc] = "Content-Type: application/json";
+        argc += 1;
+
+        for (headers) |hdr| {
+            argv_buf[argc] = "-H";
+            argc += 1;
+            argv_buf[argc] = hdr;
+            argc += 1;
+        }
+
+        argv_buf[argc] = "-d";
+        argc += 1;
+        argv_buf[argc] = body;
+        argc += 1;
+        argv_buf[argc] = url;
+        argc += 1;
+
+        var child = std.process.Child.init(argv_buf[0..argc], allocator);
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Ignore;
+
+        try child.spawn();
+
+        // Read stdout line by line, parse SSE events
+        var accumulated: std.ArrayListUnmanaged(u8) = .empty;
+        defer accumulated.deinit(allocator);
+
+        var line_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer line_buf.deinit(allocator);
+
+        const file = child.stdout.?;
+        var read_buf: [4096]u8 = undefined;
+
+        while (true) {
+            const n = file.read(&read_buf) catch break;
+            if (n == 0) break;
+
+            for (read_buf[0..n]) |byte| {
+                if (byte == '\n') {
+                    const result = parseGeminiSseLine(allocator, line_buf.items) catch {
+                        line_buf.clearRetainingCapacity();
+                        continue;
+                    };
+                    line_buf.clearRetainingCapacity();
+                    switch (result) {
+                        .delta => |text| {
+                            defer allocator.free(text);
+                            try accumulated.appendSlice(allocator, text);
+                            callback(ctx, root.StreamChunk.textDelta(text));
+                        },
+                        .done => break,
+                        .skip => {},
+                    }
+                } else {
+                    try line_buf.append(allocator, byte);
+                }
+            }
+        }
+
+        // Send final chunk
+        callback(ctx, root.StreamChunk.finalChunk());
+
+        // Drain remaining stdout to prevent deadlock on wait()
+        while (true) {
+            const n = file.read(&read_buf) catch break;
+            if (n == 0) break;
+        }
+
+        const term = child.wait() catch return error.CurlWaitError;
+        switch (term) {
+            .Exited => |code| if (code != 0) return error.CurlFailed,
+            else => return error.CurlFailed,
+        }
+
+        const content = if (accumulated.items.len > 0)
+            try allocator.dupe(u8, accumulated.items)
+        else
+            null;
+
+        return .{
+            .content = content,
+            .usage = .{ .completion_tokens = @intCast((accumulated.items.len + 3) / 4) },
+            .model = "",
+        };
+    }
+
     /// Create a Provider interface from this GeminiProvider.
     pub fn provider(self: *GeminiProvider) Provider {
         return .{
@@ -325,6 +532,8 @@ pub const GeminiProvider = struct {
         .supports_vision = supportsVisionImpl,
         .getName = getNameImpl,
         .deinit = deinitImpl,
+        .stream_chat = streamChatImpl,
+        .supports_streaming = supportsStreamingImpl,
     };
 
     fn chatWithSystemImpl(
@@ -398,6 +607,38 @@ pub const GeminiProvider = struct {
     }
 
     fn deinitImpl(_: *anyopaque) void {}
+
+    fn supportsStreamingImpl(_: *anyopaque) bool {
+        return true;
+    }
+
+    fn streamChatImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        request: ChatRequest,
+        model: []const u8,
+        temperature: f64,
+        callback: root.StreamCallback,
+        callback_ctx: *anyopaque,
+    ) anyerror!root.StreamChatResult {
+        const self: *GeminiProvider = @ptrCast(@alignCast(ptr));
+        const auth = self.auth orelse return error.CredentialsNotSet;
+
+        const url = try buildStreamUrl(allocator, model, auth);
+        defer allocator.free(url);
+
+        const body = try buildChatRequestBody(allocator, request, temperature);
+        defer allocator.free(body);
+
+        if (auth.isApiKey()) {
+            return curlStreamGemini(allocator, url, body, &.{}, callback, callback_ctx);
+        } else {
+            var auth_hdr_buf: [512]u8 = undefined;
+            const auth_hdr = std.fmt.bufPrint(&auth_hdr_buf, "Authorization: Bearer {s}", .{auth.credential()}) catch return error.GeminiApiError;
+            const headers = [_][]const u8{auth_hdr};
+            return curlStreamGemini(allocator, url, body, &headers, callback, callback_ctx);
+        }
+    }
 };
 
 /// Build a full chat request JSON body from a ChatRequest (Gemini format).
@@ -662,6 +903,66 @@ test "buildUrl with models prefix does not double prefix" {
     defer std.testing.allocator.free(url);
     try std.testing.expect(std.mem.indexOf(u8, url, "models/models/") == null);
     try std.testing.expect(std.mem.indexOf(u8, url, "models/gemini-1.5-pro") != null);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Streaming Tests
+// ════════════════════════════════════════════════════════════════════════════
+
+test "vtable stream_chat is not null" {
+    try std.testing.expect(GeminiProvider.vtable.stream_chat != null);
+}
+
+test "vtable supports_streaming is not null" {
+    try std.testing.expect(GeminiProvider.vtable.supports_streaming != null);
+}
+
+test "buildStreamUrl with api key" {
+    const auth = GeminiAuth{ .explicit_key = "api-key-123" };
+    const url = try GeminiProvider.buildStreamUrl(std.testing.allocator, "gemini-2.0-flash", auth);
+    defer std.testing.allocator.free(url);
+    try std.testing.expect(std.mem.indexOf(u8, url, ":streamGenerateContent?key=api-key-123&alt=sse") != null);
+}
+
+test "buildStreamUrl with oauth" {
+    const auth = GeminiAuth{ .oauth_token = "ya29.test-token" };
+    const url = try GeminiProvider.buildStreamUrl(std.testing.allocator, "gemini-2.0-flash", auth);
+    defer std.testing.allocator.free(url);
+    try std.testing.expect(std.mem.endsWith(u8, url, ":streamGenerateContent?alt=sse"));
+    try std.testing.expect(std.mem.indexOf(u8, url, "?key=") == null);
+}
+
+test "parseGeminiSseLine valid delta" {
+    const allocator = std.testing.allocator;
+    const result = try GeminiProvider.parseGeminiSseLine(allocator, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}");
+    switch (result) {
+        .delta => |text| {
+            defer allocator.free(text);
+            try std.testing.expectEqualStrings("Hello", text);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseGeminiSseLine empty line" {
+    const result = try GeminiProvider.parseGeminiSseLine(std.testing.allocator, "");
+    try std.testing.expect(result == .skip);
+}
+
+test "streamChatImpl fails without credentials" {
+    // Construct directly with auth=null to avoid picking up env vars or CLI tokens
+    var p = GeminiProvider{ .auth = null, .allocator = std.testing.allocator };
+
+    const prov = p.provider();
+    const msgs = [_]root.ChatMessage{root.ChatMessage.user("test")};
+    const req = ChatRequest{ .messages = &msgs, .model = "test-model" };
+
+    const DummyCallback = struct {
+        fn cb(_: *anyopaque, _: root.StreamChunk) void {}
+    };
+    var dummy_ctx: u8 = 0;
+
+    try std.testing.expectError(error.CredentialsNotSet, prov.streamChat(std.testing.allocator, req, "test-model", 0.7, &DummyCallback.cb, @ptrCast(&dummy_ctx)));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
