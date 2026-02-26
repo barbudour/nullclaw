@@ -105,6 +105,7 @@ pub const ClaudeCliProvider = struct {
             "stream-json",
             "--model",
             model,
+            "--verbose",
         };
 
         var child = std.process.Child.init(&argv, allocator);
