@@ -114,6 +114,14 @@ nullclaw migrate openclaw
 
 > **Dev fallback (no global install):** prefix commands with `zig-out/bin/` (example: `zig-out/bin/nullclaw status`).
 
+## Edge MVP (Hybrid Host + WASM Logic)
+
+If you want edge deployment (Cloudflare Worker) with Telegram + OpenAI while keeping agent policy in WASM, see:
+
+`examples/edge/cloudflare-worker/`
+
+This pattern keeps networking/secrets in the edge host and lets you swap/update logic by replacing a tiny Zig WASM module.
+
 ## Architecture
 
 Every subsystem is a **vtable interface** — swap implementations with a config change, zero code changes.

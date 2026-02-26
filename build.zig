@@ -241,6 +241,7 @@ fn parseEnginesOption(raw: []const u8) !EngineSelection {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const is_wasi = target.result.os.tag == .wasi;
     const app_version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "2026.2.25";
     const channels_raw = b.option(
         []const u8,
@@ -340,39 +341,47 @@ pub fn build(b: *std.Build) void {
     const build_options_module = build_options.createModule();
 
     // ---------- library module (importable by consumers) ----------
-    const lib_mod = b.addModule("nullclaw", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    lib_mod.addImport("build_options", build_options_module);
-    if (sqlite3) |lib| {
-        lib_mod.linkLibrary(lib);
-    }
-    if (enable_postgres) {
-        lib_mod.linkSystemLibrary("pq", .{});
-    }
+    const lib_mod: ?*std.Build.Module = if (is_wasi) null else blk: {
+        const module = b.addModule("nullclaw", .{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        module.addImport("build_options", build_options_module);
+        if (sqlite3) |lib| {
+            module.linkLibrary(lib);
+        }
+        if (enable_postgres) {
+            module.linkSystemLibrary("pq", .{});
+        }
+        break :blk module;
+    };
 
     // ---------- executable ----------
+    const exe_imports: []const std.Build.Module.Import = if (is_wasi)
+        &.{}
+    else
+        &.{.{ .name = "nullclaw", .module = lib_mod.? }};
+
     const exe = b.addExecutable(.{
         .name = "nullclaw",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = if (is_wasi) b.path("src/main_wasi.zig") else b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "nullclaw", .module = lib_mod },
-            },
+            .imports = exe_imports,
         }),
     });
     exe.root_module.addImport("build_options", build_options_module);
 
     // Link SQLite on the compile step (not the module)
-    if (sqlite3) |lib| {
-        exe.linkLibrary(lib);
-    }
-    if (enable_postgres) {
-        exe.root_module.linkSystemLibrary("pq", .{});
+    if (!is_wasi) {
+        if (sqlite3) |lib| {
+            exe.linkLibrary(lib);
+        }
+        if (enable_postgres) {
+            exe.root_module.linkSystemLibrary("pq", .{});
+        }
     }
     exe.dead_strip_dylibs = true;
 
@@ -404,17 +413,18 @@ pub fn build(b: *std.Build) void {
     }
 
     // ---------- tests ----------
-    const lib_tests = b.addTest(.{ .root_module = lib_mod });
-    if (sqlite3) |lib| {
-        lib_tests.linkLibrary(lib);
-    }
-    if (enable_postgres) {
-        lib_tests.root_module.linkSystemLibrary("pq", .{});
-    }
-
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-
     const test_step = b.step("test", "Run all tests");
-    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
-    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    if (!is_wasi) {
+        const lib_tests = b.addTest(.{ .root_module = lib_mod.? });
+        if (sqlite3) |lib| {
+            lib_tests.linkLibrary(lib);
+        }
+        if (enable_postgres) {
+            lib_tests.root_module.linkSystemLibrary("pq", .{});
+        }
+
+        const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+        test_step.dependOn(&b.addRunArtifact(lib_tests).step);
+        test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    }
 }
