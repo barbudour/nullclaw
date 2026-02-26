@@ -8,7 +8,7 @@ const ChatMessage = root.ChatMessage;
 
 /// Provider that delegates to the `claude` CLI (Claude Code).
 ///
-/// Runs `claude -p <prompt> --output-format stream-json --model <model>`
+/// Runs `claude -p <prompt> --output-format stream-json --model <model> --verbose`
 /// and parses the stream-json output for a `type: "result"` event.
 pub const ClaudeCliProvider = struct {
     allocator: std.mem.Allocator,
@@ -105,6 +105,7 @@ pub const ClaudeCliProvider = struct {
             "stream-json",
             "--model",
             model,
+            "--verbose",
         };
 
         var child = std.process.Child.init(&argv, allocator);
