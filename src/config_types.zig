@@ -59,6 +59,12 @@ pub const DiagnosticsConfig = struct {
     backend: []const u8 = "none",
     otel_endpoint: ?[]const u8 = null,
     otel_service_name: ?[]const u8 = null,
+    /// Emit info logs for every executed tool call (name/id/duration/success).
+    /// Arguments and tool output are never logged.
+    log_tool_calls: bool = false,
+    /// Emit info logs when a user message is received by SessionManager.
+    /// Only metadata is logged (channel/session hash/message size), not content.
+    log_message_receipts: bool = false,
 };
 
 pub const AutonomyConfig = struct {

@@ -497,6 +497,12 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
             if (diag.object.get("backend")) |v| {
                 if (v == .string) self.diagnostics.backend = try self.allocator.dupe(u8, v.string);
             }
+            if (diag.object.get("log_tool_calls")) |v| {
+                if (v == .bool) self.diagnostics.log_tool_calls = v.bool;
+            }
+            if (diag.object.get("log_message_receipts")) |v| {
+                if (v == .bool) self.diagnostics.log_message_receipts = v.bool;
+            }
             if (diag.object.get("otel")) |otel| {
                 if (otel == .object) {
                     if (otel.object.get("endpoint")) |v| {

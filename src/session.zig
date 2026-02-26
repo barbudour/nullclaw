@@ -22,6 +22,7 @@ const Observer = observability.Observer;
 const tools_mod = @import("tools/root.zig");
 const Tool = tools_mod.Tool;
 const SecurityPolicy = @import("security/policy.zig").SecurityPolicy;
+const log = std.log.scoped(.session);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Session
@@ -180,6 +181,12 @@ pub const SessionManager = struct {
     /// Process a message within a session context.
     /// Finds or creates the session, locks it, runs agent.turn(), returns owned response.
     pub fn processMessage(self: *SessionManager, session_key: []const u8, content: []const u8, conversation_context: ?ConversationContext) ![]const u8 {
+        if (self.config.diagnostics.log_message_receipts) {
+            const channel = if (conversation_context) |ctx| (ctx.channel orelse "unknown") else "unknown";
+            const session_hash = std.hash.Wyhash.hash(0, session_key);
+            log.info("message receipt channel={s} session=0x{x} bytes={d}", .{ channel, session_hash, content.len });
+        }
+
         const session = try self.getOrCreate(session_key);
 
         session.mutex.lock();

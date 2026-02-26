@@ -271,6 +271,7 @@ pub const Agent = struct {
     send_mode: SendMode = .inherit,
     last_turn_usage: providers.TokenUsage = .{},
     message_timeout_secs: u64 = 0,
+    log_tool_calls: bool = false,
     compaction_keep_recent: u32 = compaction.DEFAULT_COMPACTION_KEEP_RECENT,
     compaction_max_summary_chars: u32 = compaction.DEFAULT_COMPACTION_MAX_SUMMARY_CHARS,
     compaction_max_source_chars: u32 = compaction.DEFAULT_COMPACTION_MAX_SOURCE_CHARS,
@@ -369,6 +370,7 @@ pub const Agent = struct {
             .max_tokens_override = cfg.max_tokens,
             .reasoning_effort = cfg.reasoning_effort,
             .message_timeout_secs = cfg.agent.message_timeout_secs,
+            .log_tool_calls = cfg.diagnostics.log_tool_calls,
             .compaction_keep_recent = cfg.agent.compaction_keep_recent,
             .compaction_max_summary_chars = cfg.agent.compaction_max_summary_chars,
             .compaction_max_source_chars = cfg.agent.compaction_max_source_chars,
@@ -1110,13 +1112,32 @@ pub const Agent = struct {
             defer results_buf.deinit(self.allocator);
             try results_buf.ensureTotalCapacity(self.allocator, parsed_calls.len);
 
-            for (parsed_calls) |call| {
+            const session_hash: u64 = if (self.memory_session_id) |sid| std.hash.Wyhash.hash(0, sid) else 0;
+            if (self.log_tool_calls) {
+                log.info("tool-call batch session=0x{x} count={d}", .{ session_hash, parsed_calls.len });
+            }
+
+            for (parsed_calls, 0..) |call, idx| {
+                if (self.log_tool_calls) {
+                    log.info(
+                        "tool-call start session=0x{x} index={d} name={s} id={s}",
+                        .{ session_hash, idx + 1, call.name, call.tool_call_id orelse "-" },
+                    );
+                }
+
                 const tool_start_event = ObserverEvent{ .tool_call_start = .{ .tool = call.name } };
                 self.observer.recordEvent(&tool_start_event);
 
                 const tool_timer = std.time.milliTimestamp();
                 const result = self.executeTool(arena, call);
                 const tool_duration: u64 = @as(u64, @intCast(@max(0, std.time.milliTimestamp() - tool_timer)));
+
+                if (self.log_tool_calls) {
+                    log.info(
+                        "tool-call done session=0x{x} index={d} name={s} success={} duration_ms={d}",
+                        .{ session_hash, idx + 1, call.name, result.success, tool_duration },
+                    );
+                }
 
                 const tool_event = ObserverEvent{ .tool_call = .{
                     .tool = call.name,
