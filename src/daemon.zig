@@ -368,9 +368,6 @@ fn schedulerThread(allocator: std.mem.Allocator, config: *const Config, state: *
     }
 }
 
-/// Stale detection threshold: 3x the Telegram long-poll timeout (30s).
-const STALE_THRESHOLD_SECS: i64 = 90;
-
 /// Channel supervisor thread — spawns polling threads for configured channels,
 /// monitors their health, and restarts on failure using SupervisedChannel.
 fn channelSupervisorThread(
