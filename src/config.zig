@@ -1013,6 +1013,12 @@ test "save writes configured telegram channel account" {
             .account_id = "main",
             .bot_token = "123:ABC",
             .allow_from = &.{"user1"},
+            .interactive = .{
+                .enabled = true,
+                .ttl_secs = 120,
+                .owner_only = true,
+                .remove_on_click = false,
+            },
         },
     };
     try cfg.save();
@@ -1027,6 +1033,59 @@ test "save writes configured telegram channel account" {
     try std.testing.expect(std.mem.indexOf(u8, content, "\"main\": {") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"account_id\": \"main\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"bot_token\": \"123:ABC\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"interactive\": {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"enabled\": true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"ttl_secs\": 120") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"remove_on_click\": false") != null);
+}
+
+test "save roundtrip preserves telegram interactive settings" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const config_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{base});
+    defer allocator.free(config_path);
+
+    var cfg = Config{
+        .workspace_dir = base,
+        .config_path = config_path,
+        .allocator = allocator,
+    };
+    cfg.channels.telegram = &.{
+        .{
+            .account_id = "main",
+            .bot_token = "123:ABC",
+            .interactive = .{
+                .enabled = true,
+                .ttl_secs = 321,
+                .owner_only = false,
+                .remove_on_click = false,
+            },
+        },
+    };
+    try cfg.save();
+
+    const file = try std.fs.openFileAbsolute(config_path, .{});
+    defer file.close();
+    const content = try file.readToEndAlloc(allocator, 128 * 1024);
+    defer allocator.free(content);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var loaded = Config{
+        .workspace_dir = base,
+        .config_path = config_path,
+        .allocator = arena.allocator(),
+    };
+    try loaded.parseJson(content);
+    try std.testing.expectEqual(@as(usize, 1), loaded.channels.telegram.len);
+    try std.testing.expect(loaded.channels.telegram[0].interactive.enabled);
+    try std.testing.expectEqual(@as(u64, 321), loaded.channels.telegram[0].interactive.ttl_secs);
+    try std.testing.expect(!loaded.channels.telegram[0].interactive.owner_only);
+    try std.testing.expect(!loaded.channels.telegram[0].interactive.remove_on_click);
 }
 
 test "save roundtrip preserves diagnostics logging flags" {
@@ -2323,7 +2382,7 @@ test "tools.media.audio disabled" {
 test "parse telegram accounts" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"channels": {"telegram": {"accounts": {"main": {"bot_token": "123:ABC", "allow_from": ["user1"], "reply_in_private": false, "proxy": "socks5://host:1080"}}}}}
+        \\{"channels": {"telegram": {"accounts": {"main": {"bot_token": "123:ABC", "allow_from": ["user1"], "reply_in_private": false, "proxy": "socks5://host:1080", "interactive": {"enabled": true, "ttl_secs": 42, "owner_only": false, "remove_on_click": false}}}}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
@@ -2335,11 +2394,33 @@ test "parse telegram accounts" {
     try std.testing.expectEqualStrings("user1", tg.allow_from[0]);
     try std.testing.expect(!tg.reply_in_private);
     try std.testing.expectEqualStrings("socks5://host:1080", tg.proxy.?);
+    try std.testing.expect(tg.interactive.enabled);
+    try std.testing.expectEqual(@as(u64, 42), tg.interactive.ttl_secs);
+    try std.testing.expect(!tg.interactive.owner_only);
+    try std.testing.expect(!tg.interactive.remove_on_click);
     allocator.free(tg.account_id);
     allocator.free(tg.bot_token);
     for (tg.allow_from) |u| allocator.free(u);
     allocator.free(tg.allow_from);
     allocator.free(tg.proxy.?);
+    allocator.free(cfg.channels.telegram);
+}
+
+test "parse telegram accounts interactive defaults when omitted" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"channels": {"telegram": {"accounts": {"main": {"bot_token": "123:ABC"}}}}}
+    ;
+    var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
+    try cfg.parseJson(json);
+    try std.testing.expectEqual(@as(usize, 1), cfg.channels.telegram.len);
+    const tg = cfg.channels.telegram[0];
+    try std.testing.expect(!tg.interactive.enabled);
+    try std.testing.expectEqual(@as(u64, 900), tg.interactive.ttl_secs);
+    try std.testing.expect(tg.interactive.owner_only);
+    try std.testing.expect(tg.interactive.remove_on_click);
+    allocator.free(tg.account_id);
+    allocator.free(tg.bot_token);
     allocator.free(cfg.channels.telegram);
 }
 
