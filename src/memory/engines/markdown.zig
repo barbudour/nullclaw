@@ -300,7 +300,24 @@ pub const MarkdownMemory = struct {
         var found: ?MemoryEntry = null;
         for (all) |*entry_ptr| {
             const entry = entry_ptr.*;
-            if (found == null and (std.mem.eql(u8, entry.key, key) or std.mem.indexOf(u8, entry.content, key) != null)) {
+            const matches = blk: {
+                if (std.mem.eql(u8, entry.key, key)) break :blk true;
+
+                const trimmed = std.mem.trim(u8, entry.content, " \t\r");
+                if (std.mem.startsWith(u8, trimmed, "**")) {
+                    const rest = trimmed[2..];
+                    if (std.mem.indexOf(u8, rest, "**:")) |suffix| {
+                        if (suffix > 0 and std.mem.eql(u8, rest[0..suffix], key)) {
+                            break :blk true;
+                        }
+                    }
+                }
+
+                break :blk std.mem.indexOf(u8, entry.content, key) != null;
+            };
+
+            if (matches) {
+                if (found) |*prev| prev.deinit(allocator);
                 found = entry;
             } else {
                 @constCast(entry_ptr).deinit(allocator);
@@ -571,4 +588,22 @@ test "markdown reads both MEMORY.md and memory.md when distinct" {
 
     try std.testing.expect(found_primary);
     try std.testing.expect(found_alt);
+}
+
+test "markdown get returns latest matching entry for duplicate key" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(base);
+
+    var mem = try MarkdownMemory.init(std.testing.allocator, base);
+    defer mem.deinit();
+    const m = mem.memory();
+
+    try m.store("dup_key", "old", .core, null);
+    try m.store("dup_key", "new", .core, null);
+
+    const entry = (try m.get(std.testing.allocator, "dup_key")).?;
+    defer entry.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, entry.content, "new") != null);
 }

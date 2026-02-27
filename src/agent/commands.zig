@@ -72,27 +72,8 @@ fn parsePositiveUsize(raw: []const u8) ?usize {
     return n;
 }
 
-fn isInternalMemoryKey(key: []const u8) bool {
-    return std.mem.startsWith(u8, key, "autosave_user_") or
-        std.mem.startsWith(u8, key, "autosave_assistant_") or
-        std.mem.eql(u8, key, "last_hygiene_at");
-}
-
-fn extractMarkdownMemoryKey(content: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trim(u8, content, " \t");
-    if (!std.mem.startsWith(u8, trimmed, "**")) return null;
-    const rest = trimmed[2..];
-    const suffix = std.mem.indexOf(u8, rest, "**:") orelse return null;
-    if (suffix == 0) return null;
-    return rest[0..suffix];
-}
-
 fn isInternalMemoryEntryKeyOrContent(key: []const u8, content: []const u8) bool {
-    if (isInternalMemoryKey(key)) return true;
-    if (extractMarkdownMemoryKey(content)) |extracted| {
-        if (isInternalMemoryKey(extracted)) return true;
-    }
-    return false;
+    return memory_mod.isInternalMemoryEntryKeyOrContent(key, content);
 }
 
 fn memoryRuntimePtr(self: anytype) ?*memory_mod.MemoryRuntime {

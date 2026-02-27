@@ -547,6 +547,14 @@ fn appendWorkspaceFileContent(
     };
     defer allocator.free(content);
 
+    try appendPromptSectionContent(w, filename, content);
+}
+
+fn appendPromptSectionContent(
+    w: anytype,
+    filename: []const u8,
+    content: []const u8,
+) !void {
     const trimmed = std.mem.trim(u8, content, " \t\r\n");
     if (trimmed.len == 0) return;
 
