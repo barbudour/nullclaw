@@ -457,6 +457,12 @@ pub const WebConfig = struct {
         const authority = if (path_pos) |idx| no_scheme[0..idx] else no_scheme;
         if (authority.len == 0) return false;
         if (std.mem.indexOfAny(u8, authority, " \t\r\n")) |_| return false;
+        if (path_pos) |idx| {
+            const tail = no_scheme[idx..];
+            // Keep runtime parser contract: optional path must start with '/'.
+            if (tail.len > 0 and tail[0] != '/') return false;
+            if (std.mem.indexOfScalar(u8, tail, '#') != null) return false;
+        }
         return true;
     }
 
@@ -1094,6 +1100,8 @@ test "WebConfig relay URL validation requires wss authority" {
     try std.testing.expect(!WebConfig.isValidRelayUrl("ws://relay.nullclaw.io/ws"));
     try std.testing.expect(!WebConfig.isValidRelayUrl("https://relay.nullclaw.io/ws"));
     try std.testing.expect(!WebConfig.isValidRelayUrl("wss://"));
+    try std.testing.expect(!WebConfig.isValidRelayUrl("wss://relay.nullclaw.io?x=1"));
+    try std.testing.expect(!WebConfig.isValidRelayUrl("wss://relay.nullclaw.io/ws#frag"));
 }
 
 test "WebConfig relay agent id validation enforces non-empty id" {

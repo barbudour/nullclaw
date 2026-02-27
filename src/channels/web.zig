@@ -368,6 +368,17 @@ pub const WebChannel = struct {
             ws.writeClose();
         }
 
+        // Force-close socket to unblock blocking read when relay does not answer close.
+        const fd = self.relay_socket_fd.load(.acquire);
+        if (fd != invalid_socket) {
+            if (comptime builtin.os.tag == .windows) {
+                _ = std.os.windows.ws2_32.closesocket(fd);
+            } else {
+                std.posix.close(fd);
+            }
+            self.relay_socket_fd.store(invalid_socket, .release);
+        }
+
         if (self.relay_thread) |t| {
             t.join();
             self.relay_thread = null;
@@ -381,7 +392,6 @@ pub const WebChannel = struct {
             ws.deinit();
             self.allocator.destroy(ws);
         }
-        self.relay_socket_fd.store(invalid_socket, .release);
     }
 
     fn wsSend(ctx: *anyopaque, target: []const u8, message: []const u8, _: []const []const u8) anyerror!void {
