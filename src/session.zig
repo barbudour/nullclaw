@@ -214,8 +214,6 @@ pub const SessionManager = struct {
         session.mutex.lock();
         defer session.mutex.unlock();
 
-        log.info("agent turn start session=0x{x} tools={d}", .{ session_hash, session.agent.tools.len });
-
         // Set conversation context for this turn (Signal-specific for now)
         session.agent.conversation_context = conversation_context;
         defer session.agent.conversation_context = null;

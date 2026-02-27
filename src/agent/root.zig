@@ -346,8 +346,6 @@ pub const Agent = struct {
             };
         }
 
-        log.info("agent created tools={d} model={s}", .{ tools.len, default_model });
-
         return .{
             .allocator = allocator,
             .provider = provider_i,
@@ -1380,7 +1378,6 @@ pub const Agent = struct {
         }
 
         const trimmed_call_name = std.mem.trim(u8, call.name, " \t\r\n");
-        const session_hash: u64 = if (self.memory_session_id) |sid| std.hash.Wyhash.hash(0, sid) else 0;
 
         for (self.tools) |t| {
             if (std.ascii.eqlIgnoreCase(t.name(), trimmed_call_name)) {
@@ -1438,11 +1435,6 @@ pub const Agent = struct {
                     .tool_call_id = call.tool_call_id,
                 };
             }
-        }
-
-        log.warn("tool lookup failed session=0x{x} requested='{s}'", .{ session_hash, trimmed_call_name });
-        for (self.tools, 0..) |t, i| {
-            log.info("  available tool[{d}]='{s}'", .{ i, t.name() });
         }
 
         return .{
