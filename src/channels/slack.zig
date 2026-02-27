@@ -42,11 +42,8 @@ pub const SlackChannel = struct {
     pub const DEFAULT_WEBHOOK_PATH = "/slack/events";
     pub const RECONNECT_DELAY_NS: u64 = 5 * std.time.ns_per_s;
     pub const POLL_INTERVAL_SECS: u64 = 3;
-    pub const POLL_THREAD_STACK_SIZE: usize = 256 * 1024;
-    pub const SOCKET_THREAD_STACK_SIZE: usize = switch (builtin.cpu.arch) {
-        .aarch64, .arm => 1024 * 1024,
-        else => 256 * 1024,
-    };
+    pub const POLL_THREAD_STACK_SIZE: usize = 2 * 1024 * 1024;
+    pub const SOCKET_THREAD_STACK_SIZE: usize = 2 * 1024 * 1024;
     pub const SOCKET_FAILURE_FALLBACK_THRESHOLD: u32 = 3;
 
     pub fn init(
