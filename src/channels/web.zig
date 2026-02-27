@@ -368,13 +368,14 @@ pub const WebChannel = struct {
             ws.writeClose();
         }
 
-        // Force-close socket to unblock blocking read when relay does not answer close.
+        // Unblock blocking read when relay does not answer close.
+        // Use shutdown (not close) so WsClient.deinit() performs the final close once.
         const fd = self.relay_socket_fd.load(.acquire);
         if (fd != invalid_socket) {
             if (comptime builtin.os.tag == .windows) {
-                _ = std.os.windows.ws2_32.closesocket(fd);
+                _ = std.os.windows.ws2_32.shutdown(fd, std.os.windows.ws2_32.SD_RECEIVE);
             } else {
-                std.posix.close(fd);
+                std.posix.shutdown(fd, .recv) catch {};
             }
             self.relay_socket_fd.store(invalid_socket, .release);
         }
