@@ -17,6 +17,7 @@ const mcp = @import("mcp.zig");
 const voice = @import("voice.zig");
 const health = @import("health.zig");
 const daemon = @import("daemon.zig");
+const security = @import("security/policy.zig");
 const subagent_mod = @import("subagent.zig");
 const agent_routing = @import("agent_routing.zig");
 const provider_runtime = @import("providers/runtime_bundle.zig");
@@ -216,6 +217,8 @@ pub const ChannelRuntime = struct {
     mem_rt: ?memory_mod.MemoryRuntime,
     noop_obs: *observability.NoopObserver,
     subagent_manager: ?*subagent_mod.SubagentManager,
+    policy_tracker: *security.RateTracker,
+    security_policy: *security.SecurityPolicy,
 
     /// Initialize the runtime from config — mirrors main.zig:702-786 setup.
     pub fn init(allocator: std.mem.Allocator, config: *const Config) !*ChannelRuntime {
@@ -244,6 +247,25 @@ pub const ChannelRuntime = struct {
             }
         }
 
+        // Security policy (same behavior as direct channel loops in main.zig).
+        const policy_tracker = try allocator.create(security.RateTracker);
+        errdefer allocator.destroy(policy_tracker);
+        policy_tracker.* = security.RateTracker.init(allocator, config.autonomy.max_actions_per_hour);
+        errdefer policy_tracker.deinit();
+
+        const security_policy = try allocator.create(security.SecurityPolicy);
+        errdefer allocator.destroy(security_policy);
+        security_policy.* = .{
+            .autonomy = config.autonomy.level,
+            .workspace_dir = config.workspace_dir,
+            .workspace_only = config.autonomy.workspace_only,
+            .allowed_commands = if (config.autonomy.allowed_commands.len > 0) config.autonomy.allowed_commands else &security.default_allowed_commands,
+            .max_actions_per_hour = config.autonomy.max_actions_per_hour,
+            .require_approval_for_medium_risk = config.autonomy.require_approval_for_medium_risk,
+            .block_high_risk_commands = config.autonomy.block_high_risk_commands,
+            .tracker = policy_tracker,
+        };
+
         // Tools
         const tools = tools_mod.allTools(allocator, config.workspace_dir, .{
             .http_enabled = config.http_request.enabled,
@@ -253,6 +275,8 @@ pub const ChannelRuntime = struct {
             .agents = config.agents,
             .fallback_api_key = resolved_key,
             .tools_config = config.tools,
+            .allowed_paths = config.autonomy.allowed_paths,
+            .policy = security_policy,
             .subagent_manager = subagent_manager,
         }) catch &.{};
         errdefer if (tools.len > 0) tools_mod.deinitTools(allocator, tools);
@@ -269,7 +293,8 @@ pub const ChannelRuntime = struct {
         const obs = noop_obs.observer();
 
         // Session manager
-        const session_mgr = session_mod.SessionManager.init(allocator, config, provider_i, tools, mem_opt, obs, if (mem_rt) |rt| rt.session_store else null, if (mem_rt) |*rt| rt.response_cache else null);
+        var session_mgr = session_mod.SessionManager.init(allocator, config, provider_i, tools, mem_opt, obs, if (mem_rt) |rt| rt.session_store else null, if (mem_rt) |*rt| rt.response_cache else null);
+        session_mgr.policy = security_policy;
 
         // Self — heap-allocated so pointers remain stable
         const self = try allocator.create(ChannelRuntime);
@@ -282,6 +307,8 @@ pub const ChannelRuntime = struct {
             .mem_rt = mem_rt,
             .noop_obs = noop_obs,
             .subagent_manager = subagent_manager,
+            .policy_tracker = policy_tracker,
+            .security_policy = security_policy,
         };
         // Wire MemoryRuntime pointer into SessionManager for /doctor diagnostics
         // and into memory tools for retrieval pipeline + vector sync.
@@ -303,6 +330,9 @@ pub const ChannelRuntime = struct {
         }
         if (self.mem_rt) |*rt| rt.deinit();
         self.provider_bundle.deinit();
+        self.policy_tracker.deinit();
+        alloc.destroy(self.security_policy);
+        alloc.destroy(self.policy_tracker);
         alloc.destroy(self.noop_obs);
         alloc.destroy(self);
     }
@@ -823,6 +853,48 @@ test "ProviderHolder tagged union fields" {
     try std.testing.expect(@hasField(ProviderHolder, "ollama"));
     try std.testing.expect(@hasField(ProviderHolder, "compatible"));
     try std.testing.expect(@hasField(ProviderHolder, "openai_codex"));
+}
+
+test "channel runtime wires security policy into session manager and shell tool" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const workspace = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(workspace);
+    const config_path = try std.fs.path.join(allocator, &.{ workspace, "config.json" });
+    defer allocator.free(config_path);
+
+    var allowed_paths = [_][]const u8{workspace};
+    const cfg = Config{
+        .workspace_dir = workspace,
+        .config_path = config_path,
+        .allocator = allocator,
+        .autonomy = .{
+            .allowed_paths = &allowed_paths,
+        },
+    };
+
+    var runtime = try ChannelRuntime.init(allocator, &cfg);
+    defer runtime.deinit();
+
+    try std.testing.expect(runtime.session_mgr.policy != null);
+    try std.testing.expect(runtime.session_mgr.policy.? == runtime.security_policy);
+
+    var found_shell = false;
+    for (runtime.tools) |tool| {
+        if (!std.mem.eql(u8, tool.name(), "shell")) continue;
+        found_shell = true;
+
+        const shell_tool: *tools_mod.shell.ShellTool = @ptrCast(@alignCast(tool.ptr));
+        try std.testing.expect(shell_tool.policy != null);
+        try std.testing.expect(shell_tool.policy.? == runtime.security_policy);
+        try std.testing.expectEqual(@as(usize, 1), shell_tool.allowed_paths.len);
+        try std.testing.expectEqualStrings(workspace, shell_tool.allowed_paths[0]);
+        break;
+    }
+    try std.testing.expect(found_shell);
 }
 
 test "SignalLoopState init defaults" {

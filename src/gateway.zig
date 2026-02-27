@@ -22,6 +22,7 @@ const memory_mod = @import("memory/root.zig");
 const subagent_mod = @import("subagent.zig");
 const observability = @import("observability.zig");
 const agent_routing = @import("agent_routing.zig");
+const security = @import("security/policy.zig");
 const PairingGuard = @import("security/pairing.zig").PairingGuard;
 const channels = @import("channels/root.zig");
 const bus_mod = @import("bus.zig");
@@ -2102,6 +2103,8 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
     var tools_slice: []const tools_mod.Tool = &.{};
     var mem_rt: ?memory_mod.MemoryRuntime = null;
     var subagent_manager_opt: ?*subagent_mod.SubagentManager = null;
+    var sec_tracker_opt: ?security.RateTracker = null;
+    var sec_policy_opt: ?security.SecurityPolicy = null;
     var noop_obs_gateway = observability.NoopObserver{};
     const needs_local_agent = event_bus == null;
 
@@ -2149,6 +2152,18 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
         // In daemon mode (`event_bus` is present), inbound processing is delegated to
         // the bus + channel runtime. Avoid creating a second local agent runtime here.
         if (needs_local_agent) {
+            sec_tracker_opt = security.RateTracker.init(allocator, cfg.autonomy.max_actions_per_hour);
+            sec_policy_opt = .{
+                .autonomy = cfg.autonomy.level,
+                .workspace_dir = cfg.workspace_dir,
+                .workspace_only = cfg.autonomy.workspace_only,
+                .allowed_commands = if (cfg.autonomy.allowed_commands.len > 0) cfg.autonomy.allowed_commands else &security.default_allowed_commands,
+                .max_actions_per_hour = cfg.autonomy.max_actions_per_hour,
+                .require_approval_for_medium_risk = cfg.autonomy.require_approval_for_medium_risk,
+                .block_high_risk_commands = cfg.autonomy.block_high_risk_commands,
+                .tracker = if (sec_tracker_opt) |*tracker| tracker else null,
+            };
+
             provider_bundle_opt = try providers.runtime_bundle.RuntimeProviderBundle.init(allocator, cfg);
 
             if (provider_bundle_opt) |*bundle| {
@@ -2171,11 +2186,16 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                     .screenshot_enabled = true,
                     .agents = cfg.agents,
                     .fallback_api_key = resolved_api_key,
+                    .allowed_paths = cfg.autonomy.allowed_paths,
+                    .policy = if (sec_policy_opt) |*policy| policy else null,
                     .subagent_manager = subagent_manager_opt,
                 }) catch &.{};
 
                 const mem_opt: ?memory_mod.Memory = if (mem_rt) |rt| rt.memory else null;
                 var sm = session_mod.SessionManager.init(allocator, cfg, provider_i, tools_slice, mem_opt, noop_obs_gateway.observer(), if (mem_rt) |rt| rt.session_store else null, if (mem_rt) |*rt| rt.response_cache else null);
+                if (sec_policy_opt) |*policy| {
+                    sm.policy = policy;
+                }
                 if (mem_rt) |*rt| {
                     sm.mem_rt = rt;
                     tools_mod.bindMemoryRuntime(tools_slice, rt);
@@ -2195,6 +2215,7 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
     };
     defer if (tools_slice.len > 0) tools_mod.deinitTools(allocator, tools_slice);
     defer if (session_mgr_opt) |*sm| sm.deinit();
+    defer if (sec_tracker_opt) |*tracker| tracker.deinit();
 
     // Resolve the listen address
     const addr = try std.net.Address.resolveIp(host, port);
