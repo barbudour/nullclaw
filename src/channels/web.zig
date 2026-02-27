@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const root = @import("root.zig");
 const bus_mod = @import("../bus.zig");
 const config_types = @import("../config_types.zig");
@@ -37,11 +38,15 @@ pub const WebChannel = struct {
     };
 
     pub fn initFromConfig(allocator: std.mem.Allocator, cfg: config_types.WebConfig) WebChannel {
+        const clamped_max_connections: u16 = if (@as(usize, cfg.max_connections) > ConnectionList.MAX_TRACKED)
+            @intCast(ConnectionList.MAX_TRACKED)
+        else
+            cfg.max_connections;
         return .{
             .allocator = allocator,
             .port = cfg.port,
             .listen_address = cfg.listen,
-            .max_connections = cfg.max_connections,
+            .max_connections = clamped_max_connections,
             .account_id = cfg.account_id,
         };
     }
@@ -95,7 +100,7 @@ pub const WebChannel = struct {
         };
 
         log.info("Web channel ready on {s}:{d}", .{ self.listen_address, self.port });
-        log.info("Connect: ws://{s}:{d}/ws?token={s}", .{ self.listen_address, self.port, &self.token });
+        log.info("Web channel auth token generated (hidden in logs)", .{});
     }
 
     fn serverListenThread(self: *WebChannel) void {
@@ -103,8 +108,16 @@ pub const WebChannel = struct {
             s.listen(self) catch |err| {
                 if (self.running.load(.acquire)) {
                     log.err("WebSocket server listen error: {}", .{err});
+                    self.running.store(false, .release);
                 }
+                return;
             };
+            if (self.running.load(.acquire)) {
+                log.err("WebSocket server stopped unexpectedly", .{});
+                self.running.store(false, .release);
+            }
+        } else {
+            self.running.store(false, .release);
         }
     }
 
@@ -114,7 +127,18 @@ pub const WebChannel = struct {
 
         // Stop the server (closes listening socket, triggers listen loop exit)
         if (self.server) |*s| {
-            s.stop();
+            if (comptime builtin.os.tag == .windows) {
+                // websocket.zig 0.1.0 on Zig 0.15.2 has a Windows type mismatch in
+                // Server.stop(); mimic its logic without posix.shutdown().
+                s._mut.lock();
+                defer s._mut.unlock();
+                for (s._signals) |fd| {
+                    std.posix.close(fd);
+                }
+                s._cond.wait(&s._mut);
+            } else {
+                s.stop();
+            }
         }
 
         // Wait for server thread to finish
@@ -249,7 +273,8 @@ pub const WebChannel = struct {
             }
 
             // Extract session_id from query (optional, default to "default")
-            const sid = extractQueryParam(url, "session_id") orelse "default";
+            const sid_raw = extractQueryParam(url, "session_id") orelse "default";
+            const sid = if (sid_raw.len == 0) "default" else sid_raw;
 
             var handler = WsHandler{
                 .web_channel = web_channel,
@@ -286,11 +311,13 @@ pub const WebChannel = struct {
                 else => return,
             };
 
-            // Use session_id from message if provided, otherwise from connection
-            const msg_session = switch (obj.get("session_id") orelse .null) {
-                .string => |s| s,
-                else => self.session_id[0..self.session_len],
-            };
+            // One connection maps to one session; ignore client-side overrides.
+            const msg_session = self.session_id[0..self.session_len];
+            if (obj.get("session_id")) |v| {
+                if (v == .string and !std.mem.eql(u8, v.string, msg_session)) {
+                    log.warn("WS: ignoring session_id override for established connection", .{});
+                }
+            }
 
             // Use sender_id from message if provided, otherwise "web-user"
             const sender_id = switch (obj.get("sender_id") orelse .null) {
@@ -398,6 +425,13 @@ test "WebChannel initFromConfig uses custom values" {
     try std.testing.expectEqualStrings("web-main", ch.account_id);
 }
 
+test "WebChannel initFromConfig clamps max_connections to tracked limit" {
+    const ch = WebChannel.initFromConfig(std.testing.allocator, .{
+        .max_connections = 500,
+    });
+    try std.testing.expectEqual(@as(u16, 64), ch.max_connections);
+}
+
 test "WebChannel vtable name returns web" {
     var ch = WebChannel.initFromConfig(std.testing.allocator, .{});
     const iface = ch.channel();
@@ -475,6 +509,31 @@ test "ConnectionList add and remove" {
     const list = WebChannel.ConnectionList{};
     // We can't create real websocket.Conn in tests, but we can verify the structure compiles
     try std.testing.expectEqual(@as(usize, 64), list.entries.len);
+}
+
+test "WsHandler clientMessage uses connection session id" {
+    var ch = WebChannel.initFromConfig(std.testing.allocator, .{
+        .account_id = "web-main",
+    });
+    var bus = bus_mod.Bus.init();
+    ch.setBus(&bus);
+
+    var handler = WebChannel.WsHandler{
+        .web_channel = &ch,
+        .conn = undefined,
+    };
+    const connection_sid = "conn-session";
+    @memcpy(handler.session_id[0..connection_sid.len], connection_sid);
+    handler.session_len = @intCast(connection_sid.len);
+
+    try handler.clientMessage("{\"content\":\"hello\",\"session_id\":\"other-session\",\"sender_id\":\"user-1\"}");
+
+    try std.testing.expectEqual(@as(usize, 1), bus.inboundDepth());
+    const msg = bus.consumeInbound() orelse return error.TestUnexpectedResult;
+    defer msg.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("conn-session", msg.chat_id);
+    try std.testing.expectEqualStrings("web:web-main:direct:conn-session", msg.session_key);
 }
 
 test {
