@@ -361,6 +361,14 @@ pub fn allTools(
         const ht = try allocator.create(http_request.HttpRequestTool);
         ht.* = .{};
         try list.append(allocator, ht.tool());
+
+        const wst = try allocator.create(web_search.WebSearchTool);
+        wst.* = .{};
+        try list.append(allocator, wst.tool());
+
+        const wft = try allocator.create(web_fetch.WebFetchTool);
+        wft.* = .{ .default_max_chars = tc.web_fetch_max_chars };
+        try list.append(allocator, wft.tool());
     }
 
     if (opts.browser_enabled) {
