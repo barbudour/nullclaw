@@ -400,7 +400,7 @@ pub const WebConfig = struct {
     }
 
     fn isAllowedTokenByte(byte: u8) bool {
-        return std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '~';
+        return byte >= 0x21 and byte <= 0x7e and !std.ascii.isWhitespace(byte);
     }
 
     pub fn isValidAuthToken(raw: []const u8) bool {
@@ -416,9 +416,15 @@ pub const WebConfig = struct {
         const trimmed = std.mem.trim(u8, raw, " \t\r\n");
         if (trimmed.len == 0) return false;
         if (std.mem.eql(u8, trimmed, "*")) return true;
+        if (std.mem.eql(u8, trimmed, "null")) return true;
         if (std.mem.indexOfAny(u8, trimmed, " \t\r\n")) |_| return false;
-        const scheme_sep = std.mem.indexOf(u8, trimmed, "://") orelse return false;
-        return scheme_sep + 3 < trimmed.len;
+        const normalized = trimTrailingSlash(trimmed);
+        const scheme_sep = std.mem.indexOf(u8, normalized, "://") orelse return false;
+        if (scheme_sep == 0) return false;
+        const authority = normalized[scheme_sep + 3 ..];
+        if (authority.len == 0) return false;
+        if (std.mem.indexOfAny(u8, authority, "/?#")) |_| return false;
+        return true;
     }
 };
 
@@ -1011,17 +1017,21 @@ test "WebConfig normalizePath trims and normalizes" {
     try std.testing.expectEqualStrings(WebConfig.DEFAULT_PATH, WebConfig.normalizePath(""));
 }
 
-test "WebConfig token validation enforces url-safe constraints" {
+test "WebConfig token validation enforces printable no-whitespace constraints" {
     try std.testing.expect(WebConfig.isValidAuthToken("relay-token-0123456789"));
+    try std.testing.expect(WebConfig.isValidAuthToken("token/with+symbols=0123456789"));
     try std.testing.expect(!WebConfig.isValidAuthToken("short"));
     try std.testing.expect(!WebConfig.isValidAuthToken("invalid token with spaces"));
-    try std.testing.expect(!WebConfig.isValidAuthToken("contains/slash-0123456789"));
+    try std.testing.expect(!WebConfig.isValidAuthToken("line\nbreak-token-0123456789"));
 }
 
 test "WebConfig origin validation accepts wildcard and absolute origins" {
     try std.testing.expect(WebConfig.isValidAllowedOrigin("*"));
+    try std.testing.expect(WebConfig.isValidAllowedOrigin("null"));
     try std.testing.expect(WebConfig.isValidAllowedOrigin("https://relay.nullclaw.io"));
+    try std.testing.expect(WebConfig.isValidAllowedOrigin("https://relay.nullclaw.io/"));
     try std.testing.expect(WebConfig.isValidAllowedOrigin("chrome-extension://abcdefghijklmnop"));
     try std.testing.expect(!WebConfig.isValidAllowedOrigin(""));
     try std.testing.expect(!WebConfig.isValidAllowedOrigin("relay.nullclaw.io"));
+    try std.testing.expect(!WebConfig.isValidAllowedOrigin("https://relay.nullclaw.io/path"));
 }

@@ -247,7 +247,7 @@ pub const WebChannel = struct {
             session_len: u8 = 0,
         };
 
-        fn add(self: *ConnectionList, conn: *websocket.Conn, session_id: []const u8) void {
+        fn add(self: *ConnectionList, conn: *websocket.Conn, session_id: []const u8) bool {
             self.mutex.lock();
             defer self.mutex.unlock();
             for (&self.entries) |*slot| {
@@ -257,10 +257,10 @@ pub const WebChannel = struct {
                     @memcpy(entry.session_id[0..len], session_id[0..len]);
                     entry.session_len = @intCast(len);
                     slot.* = entry;
-                    return;
+                    return true;
                 }
             }
-            log.warn("Connection list full, dropping connection", .{});
+            return false;
         }
 
         fn remove(self: *ConnectionList, conn: *websocket.Conn) void {
@@ -285,6 +285,7 @@ pub const WebChannel = struct {
                     if (std.mem.eql(u8, sid, session_id)) {
                         entry.conn.write(data) catch |err| {
                             log.warn("Failed to send to WS client: {}", .{err});
+                            slot.* = null;
                         };
                     }
                 }
@@ -354,7 +355,10 @@ pub const WebChannel = struct {
             @memcpy(handler.session_id[0..len], sid[0..len]);
             handler.session_len = @intCast(len);
 
-            web_channel.connections.add(conn, sid);
+            if (!web_channel.connections.add(conn, sid)) {
+                log.warn("WS connection rejected: connection list full", .{});
+                return error.ServiceUnavailable;
+            }
             log.info("WS client connected (session={s})", .{sid});
 
             return handler;
