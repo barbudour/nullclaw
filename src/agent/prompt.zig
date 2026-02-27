@@ -165,6 +165,7 @@ fn buildIdentitySection(
 ) !void {
     try w.writeAll("## Project Context\n\n");
     try w.writeAll("The following workspace files define your identity, behavior, and context.\n\n");
+    try w.writeAll("If AGENTS.md is present, follow its operational guidance (including startup routines and red-line constraints) unless higher-priority instructions override it.\n\n");
     try w.writeAll("If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.\n\n");
 
     const identity_files = [_][]const u8{
@@ -207,6 +208,30 @@ test "buildSystemPrompt includes SOUL persona guidance" {
     defer allocator.free(prompt);
 
     try std.testing.expect(std.mem.indexOf(u8, prompt, "If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.") != null);
+}
+
+test "buildSystemPrompt includes AGENTS operational guidance" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        const f = try tmp.dir.createFile("AGENTS.md", .{});
+        defer f.close();
+        try f.writeAll("Session Startup\n- Read SOUL.md");
+    }
+
+    const workspace = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(workspace);
+
+    const prompt = try buildSystemPrompt(allocator, .{
+        .workspace_dir = workspace,
+        .model_name = "test-model",
+        .tools = &.{},
+    });
+    defer allocator.free(prompt);
+
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "If AGENTS.md is present, follow its operational guidance (including startup routines and red-line constraints) unless higher-priority instructions override it.") != null);
 }
 
 fn buildToolsSection(w: anytype, tools: []const Tool) !void {
@@ -490,6 +515,30 @@ test "buildSystemPrompt injects memory.md when MEMORY.md is absent" {
     try std.testing.expect(std.mem.indexOf(u8, prompt, "alt-memory") != null);
 }
 
+test "buildSystemPrompt injects BOOTSTRAP.md when present" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        const f = try tmp.dir.createFile("BOOTSTRAP.md", .{});
+        defer f.close();
+        try f.writeAll("bootstrap-welcome-line");
+    }
+
+    const workspace = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(workspace);
+
+    const prompt = try buildSystemPrompt(std.testing.allocator, .{
+        .workspace_dir = workspace,
+        .model_name = "test-model",
+        .tools = &.{},
+    });
+    defer std.testing.allocator.free(prompt);
+
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "### BOOTSTRAP.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "bootstrap-welcome-line") != null);
+}
+
 test "workspacePromptFingerprint is stable when files are unchanged" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -527,6 +576,56 @@ test "workspacePromptFingerprint changes when tracked file changes" {
         const f = try tmp.dir.createFile("SOUL.md", .{ .truncate = true });
         defer f.close();
         try f.writeAll("longer-content-after-change");
+    }
+
+    const after = try workspacePromptFingerprint(std.testing.allocator, workspace);
+    try std.testing.expect(before != after);
+}
+
+test "workspacePromptFingerprint changes when BOOTSTRAP.md changes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        const f = try tmp.dir.createFile("BOOTSTRAP.md", .{});
+        defer f.close();
+        try f.writeAll("bootstrap-v1");
+    }
+
+    const workspace = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(workspace);
+
+    const before = try workspacePromptFingerprint(std.testing.allocator, workspace);
+
+    {
+        const f = try tmp.dir.createFile("BOOTSTRAP.md", .{ .truncate = true });
+        defer f.close();
+        try f.writeAll("bootstrap-v2-updated");
+    }
+
+    const after = try workspacePromptFingerprint(std.testing.allocator, workspace);
+    try std.testing.expect(before != after);
+}
+
+test "workspacePromptFingerprint changes when AGENTS.md changes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        const f = try tmp.dir.createFile("AGENTS.md", .{});
+        defer f.close();
+        try f.writeAll("startup-v1");
+    }
+
+    const workspace = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(workspace);
+
+    const before = try workspacePromptFingerprint(std.testing.allocator, workspace);
+
+    {
+        const f = try tmp.dir.createFile("AGENTS.md", .{ .truncate = true });
+        defer f.close();
+        try f.writeAll("startup-v2-updated");
     }
 
     const after = try workspacePromptFingerprint(std.testing.allocator, workspace);

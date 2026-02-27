@@ -1542,6 +1542,8 @@ pub fn scaffoldWorkspace(allocator: std.mem.Allocator, workspace_dir: []const u8
         else => return err,
     };
 
+    const had_legacy_user_content = try hasLegacyUserContentIndicators(allocator, workspace_dir);
+
     // MEMORY.md
     const mem_tmpl = try memoryTemplate(allocator, ctx);
     defer allocator.free(mem_tmpl);
@@ -1573,7 +1575,7 @@ pub fn scaffoldWorkspace(allocator: std.mem.Allocator, workspace_dir: []const u8
 
     // BOOTSTRAP.md lifecycle:
     // one-shot onboarding instructions with persisted state marker.
-    try ensureBootstrapLifecycle(allocator, workspace_dir, identity_tmpl, user_tmpl);
+    try ensureBootstrapLifecycle(allocator, workspace_dir, identity_tmpl, user_tmpl, had_legacy_user_content);
 
     // Ensure memory/ subdirectory
     const mem_dir = try std.fmt.allocPrint(allocator, "{s}/memory", .{workspace_dir});
@@ -1610,6 +1612,7 @@ fn ensureBootstrapLifecycle(
     workspace_dir: []const u8,
     identity_template: []const u8,
     user_template: []const u8,
+    had_legacy_user_content: bool,
 ) !void {
     const bootstrap_path = try std.fmt.allocPrint(allocator, "{s}/BOOTSTRAP.md", .{workspace_dir});
     defer allocator.free(bootstrap_path);
@@ -1635,6 +1638,7 @@ fn ensureBootstrapLifecycle(
             workspace_dir,
             identity_template,
             user_template,
+            had_legacy_user_content,
         );
         if (legacy_completed) {
             try markOnboardingCompletedAt(allocator, &state);
@@ -1659,19 +1663,27 @@ fn isLegacyOnboardingCompleted(
     workspace_dir: []const u8,
     identity_template: []const u8,
     user_template: []const u8,
+    had_legacy_user_content: bool,
 ) !bool {
     const identity_path = try std.fmt.allocPrint(allocator, "{s}/IDENTITY.md", .{workspace_dir});
     defer allocator.free(identity_path);
     const user_path = try std.fmt.allocPrint(allocator, "{s}/USER.md", .{workspace_dir});
     defer allocator.free(user_path);
 
-    const identity_content = try readFileIfPresent(allocator, identity_path, 1024 * 1024) orelse return false;
-    defer allocator.free(identity_content);
-    const user_content = try readFileIfPresent(allocator, user_path, 1024 * 1024) orelse return false;
-    defer allocator.free(user_content);
-
-    return !std.mem.eql(u8, identity_content, identity_template) or
-        !std.mem.eql(u8, user_content, user_template);
+    var templates_diverged = false;
+    if (try readFileIfPresent(allocator, identity_path, 1024 * 1024)) |identity_content| {
+        defer allocator.free(identity_content);
+        if (!std.mem.eql(u8, identity_content, identity_template)) {
+            templates_diverged = true;
+        }
+    }
+    if (try readFileIfPresent(allocator, user_path, 1024 * 1024)) |user_content| {
+        defer allocator.free(user_content);
+        if (!std.mem.eql(u8, user_content, user_template)) {
+            templates_diverged = true;
+        }
+    }
+    return templates_diverged or had_legacy_user_content;
 }
 
 fn workspaceStatePath(allocator: std.mem.Allocator, workspace_dir: []const u8) ![]u8 {
@@ -1806,6 +1818,24 @@ fn fileExistsAbsolute(path: []const u8) bool {
     const file = std.fs.openFileAbsolute(path, .{}) catch return false;
     file.close();
     return true;
+}
+
+fn pathExistsAbsolute(path: []const u8) bool {
+    std.fs.accessAbsolute(path, .{}) catch return false;
+    return true;
+}
+
+fn hasLegacyUserContentIndicators(allocator: std.mem.Allocator, workspace_dir: []const u8) !bool {
+    const memory_dir_path = try std.fmt.allocPrint(allocator, "{s}/memory", .{workspace_dir});
+    defer allocator.free(memory_dir_path);
+    const memory_file_path = try std.fmt.allocPrint(allocator, "{s}/MEMORY.md", .{workspace_dir});
+    defer allocator.free(memory_file_path);
+    const git_dir_path = try std.fmt.allocPrint(allocator, "{s}/.git", .{workspace_dir});
+    defer allocator.free(git_dir_path);
+
+    return pathExistsAbsolute(memory_dir_path) or
+        pathExistsAbsolute(memory_file_path) or
+        pathExistsAbsolute(git_dir_path);
 }
 
 fn makeIsoTimestamp(allocator: std.mem.Allocator) ![]u8 {
@@ -2173,6 +2203,64 @@ test "scaffoldWorkspace does not seed BOOTSTRAP for legacy completed workspace" 
     var state = try readWorkspaceOnboardingState(std.testing.allocator, base);
     defer state.deinit(std.testing.allocator);
     try std.testing.expect(state.bootstrap_seeded_at == null);
+    try std.testing.expect(state.onboarding_completed_at != null);
+}
+
+test "scaffoldWorkspace treats memory-backed workspace as existing and skips BOOTSTRAP" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("memory");
+    try tmp.dir.writeFile(.{
+        .sub_path = "memory/2026-02-25.md",
+        .data = "# Daily log\nSome notes",
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "MEMORY.md",
+        .data = "# Long-term memory\nImportant stuff",
+    });
+
+    const base = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(base);
+
+    try scaffoldWorkspace(std.testing.allocator, base, &ProjectContext{});
+
+    const identity_file = try tmp.dir.openFile("IDENTITY.md", .{});
+    identity_file.close();
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile("BOOTSTRAP.md", .{}));
+
+    const memory_file = try tmp.dir.openFile("MEMORY.md", .{});
+    defer memory_file.close();
+    const memory_content = try memory_file.readToEndAlloc(std.testing.allocator, 4 * 1024);
+    defer std.testing.allocator.free(memory_content);
+    try std.testing.expectEqualStrings("# Long-term memory\nImportant stuff", memory_content);
+
+    var state = try readWorkspaceOnboardingState(std.testing.allocator, base);
+    defer state.deinit(std.testing.allocator);
+    try std.testing.expect(state.onboarding_completed_at != null);
+}
+
+test "scaffoldWorkspace treats git-backed workspace as existing and skips BOOTSTRAP" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".git");
+    try tmp.dir.writeFile(.{
+        .sub_path = ".git/HEAD",
+        .data = "ref: refs/heads/main\n",
+    });
+
+    const base = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(base);
+
+    try scaffoldWorkspace(std.testing.allocator, base, &ProjectContext{});
+
+    const identity_file = try tmp.dir.openFile("IDENTITY.md", .{});
+    identity_file.close();
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile("BOOTSTRAP.md", .{}));
+
+    var state = try readWorkspaceOnboardingState(std.testing.allocator, base);
+    defer state.deinit(std.testing.allocator);
     try std.testing.expect(state.onboarding_completed_at != null);
 }
 
