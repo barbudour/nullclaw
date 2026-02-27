@@ -362,6 +362,13 @@ pub const MaixCamConfig = struct {
     name: []const u8 = "maixcam",
 };
 
+pub const WebConfig = struct {
+    account_id: []const u8 = "default",
+    port: u16 = 32123,
+    listen: []const u8 = "127.0.0.1",
+    max_connections: u16 = 10,
+};
+
 pub const ChannelsConfig = struct {
     cli: bool = true,
     telegram: []const TelegramConfig = &.{},
@@ -381,6 +388,7 @@ pub const ChannelsConfig = struct {
     qq: []const QQConfig = &.{},
     onebot: []const OneBotConfig = &.{},
     maixcam: []const MaixCamConfig = &.{},
+    web: []const WebConfig = &.{},
 
     fn primaryAccount(comptime T: type, items: []const T) ?T {
         if (items.len == 0) return null;
@@ -444,6 +452,9 @@ pub const ChannelsConfig = struct {
     }
     pub fn maixcamPrimary(self: *const ChannelsConfig) ?MaixCamConfig {
         return primaryAccount(MaixCamConfig, self.maixcam);
+    }
+    pub fn webPrimary(self: *const ChannelsConfig) ?WebConfig {
+        return primaryAccount(WebConfig, self.web);
     }
 };
 
@@ -928,3 +939,11 @@ pub const SessionConfig = struct {
     identity_links: []const IdentityLink = &.{},
     typing_interval_secs: u32 = 5,
 };
+
+test "WebConfig defaults" {
+    const cfg = WebConfig{};
+    try std.testing.expectEqualStrings("default", cfg.account_id);
+    try std.testing.expectEqual(@as(u16, 32123), cfg.port);
+    try std.testing.expectEqualStrings("127.0.0.1", cfg.listen);
+    try std.testing.expectEqual(@as(u16, 10), cfg.max_connections);
+}
