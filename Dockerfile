@@ -8,6 +8,7 @@ RUN apk add --no-cache zig musl-dev
 WORKDIR /app
 COPY build.zig build.zig.zon ./
 COPY src/ src/
+COPY vendor/ vendor/
 
 RUN zig build -Doptimize=ReleaseSmall
 
