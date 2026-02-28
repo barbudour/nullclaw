@@ -4,6 +4,8 @@ const root = @import("root.zig");
 const bus_mod = @import("../bus.zig");
 const websocket = @import("../websocket.zig");
 
+const Atomic = @import("../portable_atomic.zig").Atomic;
+
 const log = std.log.scoped(.discord);
 
 /// Discord channel — connects via WebSocket gateway, sends via REST API.
@@ -25,15 +27,15 @@ pub const DiscordChannel = struct {
     typing_handles: std.StringHashMapUnmanaged(*TypingTask) = .empty,
 
     // Gateway state
-    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    sequence: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
-    heartbeat_interval_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    heartbeat_stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    running: Atomic(bool) = Atomic(bool).init(false),
+    sequence: Atomic(i64) = Atomic(i64).init(0),
+    heartbeat_interval_ms: Atomic(u64) = Atomic(u64).init(0),
+    heartbeat_stop: Atomic(bool) = Atomic(bool).init(false),
     session_id: ?[]u8 = null,
     resume_gateway_url: ?[]u8 = null,
     bot_user_id: ?[]u8 = null,
     gateway_thread: ?std.Thread = null,
-    ws_fd: std.atomic.Value(SocketFd) = std.atomic.Value(SocketFd).init(invalid_socket),
+    ws_fd: Atomic(SocketFd) = Atomic(SocketFd).init(invalid_socket),
 
     const SocketFd = std.net.Stream.Handle;
     const invalid_socket: SocketFd = switch (builtin.os.tag) {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const Atomic = @import("portable_atomic.zig").Atomic;
 
 /// Events the observer can record.
 pub const ObserverEvent = union(enum) {
@@ -380,8 +381,8 @@ pub const OtelObserver = struct {
     mutex: std.Thread.Mutex,
     current_trace_id: [32]u8,
     current_start_ns: u64,
-    requests_total: std.atomic.Value(u64),
-    errors_total: std.atomic.Value(u64),
+    requests_total: Atomic(u64),
+    errors_total: Atomic(u64),
 
     const max_batch_size: usize = 10;
 
@@ -401,8 +402,8 @@ pub const OtelObserver = struct {
             .mutex = .{},
             .current_trace_id = .{0} ** 32,
             .current_start_ns = 0,
-            .requests_total = std.atomic.Value(u64).init(0),
-            .errors_total = std.atomic.Value(u64).init(0),
+            .requests_total = Atomic(u64).init(0),
+            .errors_total = Atomic(u64).init(0),
         };
     }
 

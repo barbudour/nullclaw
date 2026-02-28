@@ -25,6 +25,7 @@ const provider_runtime = @import("providers/runtime_bundle.zig");
 const signal = @import("channels/signal.zig");
 const matrix = @import("channels/matrix.zig");
 const channels_mod = @import("channels/root.zig");
+const Atomic = @import("portable_atomic.zig").Atomic;
 
 const log = std.log.scoped(.channel_loop);
 const TELEGRAM_OFFSET_STORE_VERSION: i64 = 1;
@@ -187,16 +188,16 @@ fn matrixRoomPeerId(reply_target: ?[]const u8) []const u8 {
 
 pub const TelegramLoopState = struct {
     /// Updated after each pollUpdates() — epoch seconds.
-    last_activity: std.atomic.Value(i64),
+    last_activity: Atomic(i64),
     /// Supervisor sets this to ask the polling thread to stop.
-    stop_requested: std.atomic.Value(bool),
+    stop_requested: Atomic(bool),
     /// Thread handle for join().
     thread: ?std.Thread = null,
 
     pub fn init() TelegramLoopState {
         return .{
-            .last_activity = std.atomic.Value(i64).init(std.time.timestamp()),
-            .stop_requested = std.atomic.Value(bool).init(false),
+            .last_activity = Atomic(i64).init(std.time.timestamp()),
+            .stop_requested = Atomic(bool).init(false),
         };
     }
 };
@@ -498,16 +499,16 @@ pub fn runTelegramLoop(
 
 pub const SignalLoopState = struct {
     /// Updated after each pollMessages() — epoch seconds.
-    last_activity: std.atomic.Value(i64),
+    last_activity: Atomic(i64),
     /// Supervisor sets this to ask the polling thread to stop.
-    stop_requested: std.atomic.Value(bool),
+    stop_requested: Atomic(bool),
     /// Thread handle for join().
     thread: ?std.Thread = null,
 
     pub fn init() SignalLoopState {
         return .{
-            .last_activity = std.atomic.Value(i64).init(std.time.timestamp()),
-            .stop_requested = std.atomic.Value(bool).init(false),
+            .last_activity = Atomic(i64).init(std.time.timestamp()),
+            .stop_requested = Atomic(bool).init(false),
         };
     }
 };
@@ -632,16 +633,16 @@ pub fn runSignalLoop(
 
 pub const MatrixLoopState = struct {
     /// Updated after each pollMessages() — epoch seconds.
-    last_activity: std.atomic.Value(i64),
+    last_activity: Atomic(i64),
     /// Supervisor sets this to ask the polling thread to stop.
-    stop_requested: std.atomic.Value(bool),
+    stop_requested: Atomic(bool),
     /// Thread handle for join().
     thread: ?std.Thread = null,
 
     pub fn init() MatrixLoopState {
         return .{
-            .last_activity = std.atomic.Value(i64).init(std.time.timestamp()),
-            .stop_requested = std.atomic.Value(bool).init(false),
+            .last_activity = Atomic(i64).init(std.time.timestamp()),
+            .stop_requested = Atomic(bool).init(false),
         };
     }
 };

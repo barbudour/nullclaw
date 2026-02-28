@@ -194,7 +194,7 @@ fn readFromFile(allocator: std.mem.Allocator, file: std.fs.File, max_size: u64) 
     if (stat.size > max_size)
         return error.ImageTooLarge;
 
-    const data = try file.readToEndAlloc(allocator, max_size);
+    const data = try file.readToEndAlloc(allocator, @intCast(max_size));
     errdefer allocator.free(data);
 
     const mime = detectMimeType(data) orelse return error.UnknownImageFormat;

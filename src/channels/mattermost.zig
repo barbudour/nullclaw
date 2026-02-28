@@ -5,6 +5,8 @@ const websocket = @import("../websocket.zig");
 const bus_mod = @import("../bus.zig");
 const config_types = @import("../config_types.zig");
 
+const Atomic = @import("../portable_atomic.zig").Atomic;
+
 const log = std.log.scoped(.mattermost);
 
 const SocketFd = std.net.Stream.Handle;
@@ -75,11 +77,11 @@ pub const MattermostChannel = struct {
     bus: ?*bus_mod.Bus = null,
     dedup: DedupRing = .{},
 
-    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    connected: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    ws_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    tmp_counter: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    ws_fd: std.atomic.Value(SocketFd) = std.atomic.Value(SocketFd).init(invalid_socket),
+    running: Atomic(bool) = Atomic(bool).init(false),
+    connected: Atomic(bool) = Atomic(bool).init(false),
+    ws_seq: Atomic(u64) = Atomic(u64).init(0),
+    tmp_counter: Atomic(u64) = Atomic(u64).init(0),
+    ws_fd: Atomic(SocketFd) = Atomic(SocketFd).init(invalid_socket),
     gateway_thread: ?std.Thread = null,
 
     bot_state_mu: std.Thread.Mutex = .{},

@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const root = @import("root.zig");
 const bus = @import("../bus.zig");
+const Atomic = @import("../portable_atomic.zig").Atomic;
 
 /// Message dispatch — routes incoming ChannelMessages to the agent,
 /// routes agent responses back to the originating channel.
@@ -134,9 +135,9 @@ pub fn buildSystemPrompt(
 
 /// Counters for the outbound dispatch loop (all atomic for thread safety).
 pub const DispatchStats = struct {
-    dispatched: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    errors: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    channel_not_found: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    dispatched: Atomic(u64) = Atomic(u64).init(0),
+    errors: Atomic(u64) = Atomic(u64).init(0),
+    channel_not_found: Atomic(u64) = Atomic(u64).init(0),
 
     pub fn getDispatched(self: *const DispatchStats) u64 {
         return self.dispatched.load(.monotonic);
@@ -350,8 +351,8 @@ test "build system prompt" {
 /// Mock channel for dispatch tests.
 const MockChannel = struct {
     name_str: []const u8,
-    sent_count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    chunk_count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    sent_count: Atomic(u64) = Atomic(u64).init(0),
+    chunk_count: Atomic(u64) = Atomic(u64).init(0),
     should_fail: bool = false,
 
     const vtable = root.Channel.VTable{

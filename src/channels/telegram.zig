@@ -5,6 +5,7 @@ const voice = @import("../voice.zig");
 const platform = @import("../platform.zig");
 const config_types = @import("../config_types.zig");
 const interaction_choices = @import("../interactions/choices.zig");
+const Atomic = @import("../portable_atomic.zig").Atomic;
 
 const log = std.log.scoped(.telegram);
 const MEDIA_GROUP_FLUSH_SECS: u64 = 3;
@@ -456,7 +457,7 @@ pub const TelegramChannel = struct {
     typing_handles: std.StringHashMapUnmanaged(*TypingTask) = .empty,
     interaction_mu: std.Thread.Mutex = .{},
     pending_interactions: std.StringHashMapUnmanaged(PendingInteraction) = .empty,
-    interaction_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(1),
+    interaction_seq: Atomic(u64) = Atomic(u64).init(1),
 
     pub const MAX_MESSAGE_LEN: usize = 4096;
     const TYPING_INTERVAL_NS: u64 = 4 * std.time.ns_per_s;

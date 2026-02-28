@@ -81,7 +81,7 @@ pub const FileReadTool = struct {
         }
 
         // Read contents
-        const contents = file.readToEndAlloc(allocator, self.max_file_size) catch |err| {
+        const contents = file.readToEndAlloc(allocator, @intCast(self.max_file_size)) catch |err| {
             const msg = try std.fmt.allocPrint(allocator, "Failed to read file: {}", .{err});
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         };
