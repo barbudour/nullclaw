@@ -384,10 +384,24 @@ pub const LarkChannel = struct {
         return if (self.use_feishu) "open.feishu.cn" else "open.larksuite.com";
     }
 
+    fn appendUrlQueryEscaped(writer: anytype, input: []const u8) !void {
+        for (input) |c| {
+            const is_unreserved = std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~';
+            if (is_unreserved) {
+                try writer.writeByte(c);
+            } else {
+                try writer.print("%{X:0>2}", .{c});
+            }
+        }
+    }
+
     fn buildWebsocketPath(buf: []u8, app_id: []const u8, app_access_token: []const u8) ![]const u8 {
         var fbs = std.io.fixedBufferStream(buf);
         const w = fbs.writer();
-        try w.print("/ws/v2?app_id={s}&access_token={s}", .{ app_id, app_access_token });
+        try w.writeAll("/ws/v2?app_id=");
+        try appendUrlQueryEscaped(w, app_id);
+        try w.writeAll("&access_token=");
+        try appendUrlQueryEscaped(w, app_access_token);
         return fbs.getWritten();
     }
 
@@ -613,7 +627,7 @@ pub const LarkChannel = struct {
         self.running.store(false, .release);
         self.connected.store(false, .release);
 
-        const fd = self.ws_fd.load(.acquire);
+        const fd = self.ws_fd.swap(invalid_socket, .acq_rel);
         if (fd != invalid_socket) {
             if (comptime builtin.os.tag == .windows) {
                 _ = std.os.windows.ws2_32.closesocket(fd);
@@ -1294,8 +1308,10 @@ test "lark healthCheck websocket mode requires both running and connected" {
 test "lark buildWebsocketPath handles special characters in token" {
     var buf: [512]u8 = undefined;
     const path = try LarkChannel.buildWebsocketPath(&buf, "app_id_with_special_chars", "token+with/special=chars");
-    try std.testing.expect(std.mem.indexOf(u8, path, "app_id=app_id_with_special_chars") != null);
-    try std.testing.expect(std.mem.indexOf(u8, path, "access_token=token+with/special=chars") != null);
+    try std.testing.expectEqualStrings(
+        "/ws/v2?app_id=app_id_with_special_chars&access_token=token%2Bwith%2Fspecial%3Dchars",
+        path,
+    );
 }
 
 test "lark buildWebsocketPong handles empty timestamp" {
