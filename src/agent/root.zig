@@ -1178,6 +1178,7 @@ pub const Agent = struct {
                     .tool = call.name,
                     .duration_ms = tool_duration,
                     .success = result.success,
+                    .detail = if (result.success) null else result.output,
                 } };
                 self.observer.recordEvent(&tool_event);
 

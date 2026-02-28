@@ -7,7 +7,7 @@ pub const ObserverEvent = union(enum) {
     llm_response: struct { provider: []const u8, model: []const u8, duration_ms: u64, success: bool, error_message: ?[]const u8 },
     agent_end: struct { duration_ms: u64, tokens_used: ?u64 },
     tool_call_start: struct { tool: []const u8 },
-    tool_call: struct { tool: []const u8, duration_ms: u64, success: bool },
+    tool_call: struct { tool: []const u8, duration_ms: u64, success: bool, detail: ?[]const u8 = null },
     tool_iterations_exhausted: struct { iterations: u32 },
     turn_complete: void,
     channel_message: struct { channel: []const u8, direction: []const u8 },
@@ -858,6 +858,30 @@ test "ObserverEvent err fields" {
         .err => |e| {
             try std.testing.expectEqualStrings("gateway", e.component);
             try std.testing.expectEqualStrings("connection refused", e.message);
+        },
+        else => unreachable,
+    }
+}
+
+test "ObserverEvent tool_call detail defaults to null" {
+    const event = ObserverEvent{ .tool_call = .{ .tool = "shell", .duration_ms = 42, .success = true } };
+    switch (event) {
+        .tool_call => |e| {
+            try std.testing.expectEqualStrings("shell", e.tool);
+            try std.testing.expectEqual(@as(u64, 42), e.duration_ms);
+            try std.testing.expect(e.success);
+            try std.testing.expect(e.detail == null);
+        },
+        else => unreachable,
+    }
+}
+
+test "ObserverEvent tool_call detail carries failure context" {
+    const event = ObserverEvent{ .tool_call = .{ .tool = "shell", .duration_ms = 10, .success = false, .detail = "exit code 1" } };
+    switch (event) {
+        .tool_call => |e| {
+            try std.testing.expect(!e.success);
+            try std.testing.expectEqualStrings("exit code 1", e.detail.?);
         },
         else => unreachable,
     }
