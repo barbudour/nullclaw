@@ -1149,6 +1149,18 @@ test "WebConfig defaults" {
     try std.testing.expect(!cfg.relay_e2e_required);
 }
 
+test "security defaults stay least-privilege" {
+    const autonomy = AutonomyConfig{};
+    try std.testing.expectEqual(AutonomyLevel.supervised, autonomy.level);
+    try std.testing.expect(autonomy.workspace_only);
+    try std.testing.expectEqual(@as(u32, 20), autonomy.max_actions_per_hour);
+    try std.testing.expect(autonomy.require_approval_for_medium_risk);
+    try std.testing.expect(autonomy.block_high_risk_commands);
+
+    const http_request = HttpRequestConfig{};
+    try std.testing.expect(!http_request.enabled);
+}
+
 test "WebConfig normalizePath trims and normalizes" {
     try std.testing.expectEqualStrings("/ws", WebConfig.normalizePath("/ws/"));
     try std.testing.expectEqualStrings("/relay", WebConfig.normalizePath(" /relay/ "));
