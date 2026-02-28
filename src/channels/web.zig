@@ -304,7 +304,7 @@ pub const WebChannel = struct {
 
         if (self.relay_pairing_guard) |*guard| {
             if (guard.pairingCode()) |code| {
-                log.warn("Web relay pairing code (one-time, {d}s TTL): {s}", .{
+                log.info("Web relay pairing code (one-time, {d}s TTL): {s}", .{
                     self.relay_pairing_code_ttl_secs,
                     code,
                 });
@@ -322,7 +322,7 @@ pub const WebChannel = struct {
         if (self.relay_pairing_guard) |*guard| {
             if (guard.regeneratePairingCode()) |code| {
                 self.relay_pairing_issued_at = std.time.timestamp();
-                log.warn("Web relay pairing code rotated ({s}, one-time, {d}s TTL): {s}", .{
+                log.info("Web relay pairing code rotated ({s}, one-time, {d}s TTL): {s}", .{
                     reason,
                     self.relay_pairing_code_ttl_secs,
                     code,
