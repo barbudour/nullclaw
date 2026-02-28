@@ -591,6 +591,35 @@ fn clearInboundProcessingIndicator(
     ch.stopTyping(target) catch {};
 }
 
+const StreamingOutboundCtx = struct {
+    allocator: std.mem.Allocator,
+    event_bus: *bus_mod.Bus,
+    channel: []const u8,
+    account_id: ?[]const u8,
+    chat_id: []const u8,
+};
+
+fn publishStreamingChunk(ctx_ptr: *anyopaque, delta: []const u8) void {
+    if (delta.len == 0) return;
+    const ctx: *StreamingOutboundCtx = @ptrCast(@alignCast(ctx_ptr));
+
+    const out = if (ctx.account_id) |aid|
+        bus_mod.makeOutboundChunkWithAccount(ctx.allocator, ctx.channel, aid, ctx.chat_id, delta)
+    else
+        bus_mod.makeOutboundChunk(ctx.allocator, ctx.channel, ctx.chat_id, delta);
+
+    var message = out catch |err| {
+        log.warn("inbound dispatch chunk makeOutbound failed: {}", .{err});
+        return;
+    };
+    ctx.event_bus.publishOutbound(message) catch |err| {
+        message.deinit(ctx.allocator);
+        if (err != error.Closed) {
+            log.warn("inbound dispatch chunk publishOutbound failed: {}", .{err});
+        }
+    };
+}
+
 fn inboundDispatcherThread(
     allocator: std.mem.Allocator,
     event_bus: *bus_mod.Bus,
@@ -632,7 +661,22 @@ fn inboundDispatcherThread(
             typing_recipient,
         );
 
-        const reply = runtime.session_mgr.processMessage(session_key, msg.content, null) catch |err| {
+        const use_streaming_outbound = std.mem.eql(u8, msg.channel, "web");
+        var streaming_ctx = StreamingOutboundCtx{
+            .allocator = allocator,
+            .event_bus = event_bus,
+            .channel = msg.channel,
+            .account_id = outbound_account_id,
+            .chat_id = msg.chat_id,
+        };
+
+        const reply = runtime.session_mgr.processMessageStreaming(
+            session_key,
+            msg.content,
+            null,
+            if (use_streaming_outbound) publishStreamingChunk else null,
+            if (use_streaming_outbound) @ptrCast(&streaming_ctx) else null,
+        ) catch |err| {
             log.warn("inbound dispatch process failed: {}", .{err});
 
             // Send user-visible error reply back to the originating channel
