@@ -123,6 +123,10 @@ pub const known_providers = [_]ProviderInfo{
     // --- Tier 9: Local/self-hosted ---
     .{ .key = "ollama", .label = "Ollama (local CLI)", .default_model = "llama4", .env_var = "API_KEY" },
     .{ .key = "lm-studio", .label = "LM Studio (local GUI)", .default_model = "local-model", .env_var = "API_KEY" },
+
+    // --- Tier 10: CLI-based providers ---
+    .{ .key = "claude-cli", .label = "Claude CLI (claude code, local)", .default_model = "claude-opus-4-6", .env_var = "ANTHROPIC_API_KEY" },
+    .{ .key = "codex-cli", .label = "Codex CLI (OpenAI codex, local)", .default_model = "codex-mini-latest", .env_var = "OPENAI_API_KEY" },
 };
 
 /// Canonicalize provider name (handle aliases).
@@ -130,6 +134,7 @@ pub fn canonicalProviderName(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "grok")) return "xai";
     if (std.mem.eql(u8, name, "together")) return "together-ai";
     if (std.mem.eql(u8, name, "google") or std.mem.eql(u8, name, "google-gemini")) return "gemini";
+    if (std.mem.eql(u8, name, "claude-code")) return "claude-cli";
     return name;
 }
 
@@ -192,6 +197,8 @@ pub fn fallbackModelsForProvider(provider: []const u8) []const []const u8 {
     if (std.mem.eql(u8, canonical, "gemini")) return &gemini_fallback;
     if (std.mem.eql(u8, canonical, "deepseek")) return &deepseek_fallback;
     if (std.mem.eql(u8, canonical, "ollama")) return &ollama_fallback;
+    if (std.mem.eql(u8, canonical, "claude-cli")) return &claude_cli_fallback;
+    if (std.mem.eql(u8, canonical, "codex-cli")) return &codex_cli_fallback;
 
     // For providers without a curated fallback list, return a single-item fallback
     // based on the onboarding default model for that provider.
@@ -266,6 +273,14 @@ const ollama_fallback = [_][]const u8{
     "phi3",
 };
 
+const claude_cli_fallback = [_][]const u8{
+    "claude-opus-4-6",
+};
+
+const codex_cli_fallback = [_][]const u8{
+    "codex-mini-latest",
+};
+
 const MAX_MODELS = 20;
 
 /// Return a heap-allocated copy of the static fallback list for a provider.
@@ -315,7 +330,9 @@ pub fn fetchModelsFromApi(allocator: std.mem.Allocator, provider: []const u8, ap
     if (std.mem.eql(u8, canonical, "anthropic") or
         std.mem.eql(u8, canonical, "gemini") or
         std.mem.eql(u8, canonical, "deepseek") or
-        std.mem.eql(u8, canonical, "ollama"))
+        std.mem.eql(u8, canonical, "ollama") or
+        std.mem.eql(u8, canonical, "claude-cli") or
+        std.mem.eql(u8, canonical, "codex-cli"))
     {
         const fallback = fallbackModelsForProvider(canonical);
         var result: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -2041,6 +2058,7 @@ test "canonicalProviderName handles aliases" {
     try std.testing.expectEqualStrings("together-ai", canonicalProviderName("together"));
     try std.testing.expectEqualStrings("gemini", canonicalProviderName("google"));
     try std.testing.expectEqualStrings("gemini", canonicalProviderName("google-gemini"));
+    try std.testing.expectEqualStrings("claude-cli", canonicalProviderName("claude-code"));
     try std.testing.expectEqualStrings("openai", canonicalProviderName("openai"));
 }
 
@@ -2463,6 +2481,8 @@ test "canonicalProviderName passthrough for known providers" {
     try std.testing.expectEqualStrings("deepseek", canonicalProviderName("deepseek"));
     try std.testing.expectEqualStrings("groq", canonicalProviderName("groq"));
     try std.testing.expectEqualStrings("ollama", canonicalProviderName("ollama"));
+    try std.testing.expectEqualStrings("claude-cli", canonicalProviderName("claude-cli"));
+    try std.testing.expectEqualStrings("codex-cli", canonicalProviderName("codex-cli"));
 }
 
 test "canonicalProviderName unknown returns as-is" {
@@ -2672,7 +2692,7 @@ test "catalog_providers names are unique" {
 test "wizard promptChoice returns default for out-of-range" {
     // This tests the logic without actual I/O by validating the
     // boundary: max providers is known_providers.len
-    try std.testing.expect(known_providers.len == 30);
+    try std.testing.expect(known_providers.len == 32);
     // The wizard would clamp to default (0) for out of range input
 }
 
@@ -2785,6 +2805,14 @@ test "fallbackModelsForProvider returns models for known providers" {
 
     const gemini_models = fallbackModelsForProvider("gemini");
     try std.testing.expect(gemini_models.len >= 2);
+
+    const claude_cli_models = fallbackModelsForProvider("claude-cli");
+    try std.testing.expect(claude_cli_models.len >= 1);
+    try std.testing.expectEqualStrings("claude-opus-4-6", claude_cli_models[0]);
+
+    const codex_cli_models = fallbackModelsForProvider("codex-cli");
+    try std.testing.expect(codex_cli_models.len >= 1);
+    try std.testing.expectEqualStrings("codex-mini-latest", codex_cli_models[0]);
 }
 
 test "fallbackModelsForProvider handles aliases" {
