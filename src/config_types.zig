@@ -370,6 +370,148 @@ pub const MaixCamConfig = struct {
     name: []const u8 = "maixcam",
 };
 
+pub const WebConfig = struct {
+    pub const DEFAULT_PATH: []const u8 = "/ws";
+    pub const DEFAULT_TRANSPORT: []const u8 = "local";
+    pub const MIN_AUTH_TOKEN_LEN: usize = 16;
+    pub const MAX_AUTH_TOKEN_LEN: usize = 128;
+    pub const MAX_RELAY_AGENT_ID_LEN: usize = 64;
+    pub const MIN_RELAY_PAIRING_CODE_TTL_SECS: u32 = 60;
+    pub const MAX_RELAY_PAIRING_CODE_TTL_SECS: u32 = 300;
+    pub const MIN_RELAY_UI_TOKEN_TTL_SECS: u32 = 300;
+    pub const MAX_RELAY_UI_TOKEN_TTL_SECS: u32 = 2_592_000; // 30 days
+    pub const MIN_RELAY_TOKEN_TTL_SECS: u32 = 3_600;
+    pub const MAX_RELAY_TOKEN_TTL_SECS: u32 = 31_536_000; // 365 days
+
+    account_id: []const u8 = "default",
+    /// "local" starts an inbound WS listener in nullclaw.
+    /// "relay" keeps a single outbound WS connection to a relay service.
+    transport: []const u8 = DEFAULT_TRANSPORT,
+    port: u16 = 32123,
+    listen: []const u8 = "127.0.0.1",
+    path: []const u8 = DEFAULT_PATH,
+    max_connections: u16 = 10,
+    /// Optional WebSocket-upgrade auth token for browser/extension clients.
+    /// Used as an additional hardening control; pairing/JWT remains required
+    /// for user_message events.
+    /// If null, WebChannel falls back to env (NULLCLAW_WEB_TOKEN/NULLCLAW_GATEWAY_TOKEN/OPENCLAW_GATEWAY_TOKEN),
+    /// then to an ephemeral runtime token.
+    auth_token: ?[]const u8 = null,
+    /// Optional allowlist for Origin header values (exact match, supports "*").
+    /// Empty = allow any origin.
+    allowed_origins: []const []const u8 = &.{},
+    /// Relay endpoint for transport="relay" (must be wss://...).
+    relay_url: ?[]const u8 = null,
+    /// Stable logical agent identity on relay side.
+    relay_agent_id: []const u8 = "default",
+    /// Optional dedicated relay auth token.
+    /// If omitted, relay lifecycle resolves token from NULLCLAW_RELAY_TOKEN,
+    /// then persisted `web-relay-<account_id>` credential, then generates one.
+    relay_token: ?[]const u8 = null,
+    /// Expiry for persisted relay token lifecycle (seconds).
+    relay_token_ttl_secs: u32 = 2_592_000,
+    /// One-time pairing code lifetime for relay UI binding (seconds).
+    relay_pairing_code_ttl_secs: u32 = 300,
+    /// UI access token (JWT) TTL in relay mode (seconds).
+    relay_ui_token_ttl_secs: u32 = 86_400,
+    /// Require E2E payload encryption for relay user_message events.
+    relay_e2e_required: bool = false,
+
+    fn trimTrailingSlash(value: []const u8) []const u8 {
+        if (value.len <= 1) return value;
+        if (value[value.len - 1] == '/') return value[0 .. value.len - 1];
+        return value;
+    }
+
+    pub fn normalizePath(raw: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len == 0 or trimmed[0] != '/') return DEFAULT_PATH;
+        return trimTrailingSlash(trimmed);
+    }
+
+    pub fn isPathWellFormed(raw: []const u8) bool {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len == 0 or trimmed[0] != '/') return false;
+        if (std.mem.indexOfAny(u8, trimmed, "?#")) |_| return false;
+        return true;
+    }
+
+    pub fn isValidTransport(raw: []const u8) bool {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        return std.mem.eql(u8, trimmed, "local") or std.mem.eql(u8, trimmed, "relay");
+    }
+
+    pub fn isRelayTransport(raw: []const u8) bool {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        return std.mem.eql(u8, trimmed, "relay");
+    }
+
+    fn isAllowedTokenByte(byte: u8) bool {
+        return byte >= 0x21 and byte <= 0x7e and !std.ascii.isWhitespace(byte);
+    }
+
+    pub fn isValidAuthToken(raw: []const u8) bool {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len < MIN_AUTH_TOKEN_LEN or trimmed.len > MAX_AUTH_TOKEN_LEN) return false;
+        for (trimmed) |byte| {
+            if (!isAllowedTokenByte(byte)) return false;
+        }
+        return true;
+    }
+
+    pub fn isValidAllowedOrigin(raw: []const u8) bool {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len == 0) return false;
+        if (std.mem.eql(u8, trimmed, "*")) return true;
+        if (std.mem.eql(u8, trimmed, "null")) return true;
+        if (std.mem.indexOfAny(u8, trimmed, " \t\r\n")) |_| return false;
+        const normalized = trimTrailingSlash(trimmed);
+        const scheme_sep = std.mem.indexOf(u8, normalized, "://") orelse return false;
+        if (scheme_sep == 0) return false;
+        const authority = normalized[scheme_sep + 3 ..];
+        if (authority.len == 0) return false;
+        if (std.mem.indexOfAny(u8, authority, "/?#")) |_| return false;
+        return true;
+    }
+
+    pub fn isValidRelayUrl(raw: []const u8) bool {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (!std.mem.startsWith(u8, trimmed, "wss://")) return false;
+        const no_scheme = trimmed["wss://".len..];
+        if (no_scheme.len == 0) return false;
+        const path_pos = std.mem.indexOfAny(u8, no_scheme, "/?");
+        const authority = if (path_pos) |idx| no_scheme[0..idx] else no_scheme;
+        if (authority.len == 0) return false;
+        if (std.mem.indexOfAny(u8, authority, " \t\r\n")) |_| return false;
+        if (path_pos) |idx| {
+            const tail = no_scheme[idx..];
+            // Keep runtime parser contract: optional path must start with '/'.
+            if (tail.len > 0 and tail[0] != '/') return false;
+            if (std.mem.indexOfScalar(u8, tail, '#') != null) return false;
+        }
+        return true;
+    }
+
+    pub fn isValidRelayAgentId(raw: []const u8) bool {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len == 0 or trimmed.len > MAX_RELAY_AGENT_ID_LEN) return false;
+        if (std.mem.indexOfAny(u8, trimmed, " \t\r\n")) |_| return false;
+        return true;
+    }
+
+    pub fn isValidRelayPairingCodeTtl(ttl_secs: u32) bool {
+        return ttl_secs >= MIN_RELAY_PAIRING_CODE_TTL_SECS and ttl_secs <= MAX_RELAY_PAIRING_CODE_TTL_SECS;
+    }
+
+    pub fn isValidRelayUiTokenTtl(ttl_secs: u32) bool {
+        return ttl_secs >= MIN_RELAY_UI_TOKEN_TTL_SECS and ttl_secs <= MAX_RELAY_UI_TOKEN_TTL_SECS;
+    }
+
+    pub fn isValidRelayTokenTtl(ttl_secs: u32) bool {
+        return ttl_secs >= MIN_RELAY_TOKEN_TTL_SECS and ttl_secs <= MAX_RELAY_TOKEN_TTL_SECS;
+    }
+};
+
 pub const NostrConfig = struct {
     /// Private key: must be enc2:-encrypted via SecretStore (use onboarding wizard or SecretStore.encryptSecret).
     /// Not required when bunker_uri is set (external bunker handles signing).
@@ -435,6 +577,7 @@ pub const ChannelsConfig = struct {
     qq: []const QQConfig = &.{},
     onebot: []const OneBotConfig = &.{},
     maixcam: []const MaixCamConfig = &.{},
+    web: []const WebConfig = &.{},
     nostr: ?*NostrConfig = null,
 
     fn primaryAccount(comptime T: type, items: []const T) ?T {
@@ -499,6 +642,9 @@ pub const ChannelsConfig = struct {
     }
     pub fn maixcamPrimary(self: *const ChannelsConfig) ?MaixCamConfig {
         return primaryAccount(MaixCamConfig, self.maixcam);
+    }
+    pub fn webPrimary(self: *const ChannelsConfig) ?WebConfig {
+        return primaryAccount(WebConfig, self.web);
     }
 };
 
@@ -983,3 +1129,87 @@ pub const SessionConfig = struct {
     identity_links: []const IdentityLink = &.{},
     typing_interval_secs: u32 = 5,
 };
+
+test "WebConfig defaults" {
+    const cfg = WebConfig{};
+    try std.testing.expectEqualStrings("default", cfg.account_id);
+    try std.testing.expectEqualStrings(WebConfig.DEFAULT_TRANSPORT, cfg.transport);
+    try std.testing.expectEqual(@as(u16, 32123), cfg.port);
+    try std.testing.expectEqualStrings("127.0.0.1", cfg.listen);
+    try std.testing.expectEqualStrings(WebConfig.DEFAULT_PATH, cfg.path);
+    try std.testing.expectEqual(@as(u16, 10), cfg.max_connections);
+    try std.testing.expect(cfg.auth_token == null);
+    try std.testing.expectEqual(@as(usize, 0), cfg.allowed_origins.len);
+    try std.testing.expect(cfg.relay_url == null);
+    try std.testing.expectEqualStrings("default", cfg.relay_agent_id);
+    try std.testing.expect(cfg.relay_token == null);
+    try std.testing.expectEqual(@as(u32, 2_592_000), cfg.relay_token_ttl_secs);
+    try std.testing.expectEqual(@as(u32, 300), cfg.relay_pairing_code_ttl_secs);
+    try std.testing.expectEqual(@as(u32, 86_400), cfg.relay_ui_token_ttl_secs);
+    try std.testing.expect(!cfg.relay_e2e_required);
+}
+
+test "WebConfig normalizePath trims and normalizes" {
+    try std.testing.expectEqualStrings("/ws", WebConfig.normalizePath("/ws/"));
+    try std.testing.expectEqualStrings("/relay", WebConfig.normalizePath(" /relay/ "));
+    try std.testing.expectEqualStrings(WebConfig.DEFAULT_PATH, WebConfig.normalizePath("relay"));
+    try std.testing.expectEqualStrings(WebConfig.DEFAULT_PATH, WebConfig.normalizePath(""));
+}
+
+test "WebConfig token validation enforces printable no-whitespace constraints" {
+    try std.testing.expect(WebConfig.isValidAuthToken("relay-token-0123456789"));
+    try std.testing.expect(WebConfig.isValidAuthToken("token/with+symbols=0123456789"));
+    try std.testing.expect(!WebConfig.isValidAuthToken("short"));
+    try std.testing.expect(!WebConfig.isValidAuthToken("invalid token with spaces"));
+    try std.testing.expect(!WebConfig.isValidAuthToken("line\nbreak-token-0123456789"));
+}
+
+test "WebConfig origin validation accepts wildcard and absolute origins" {
+    try std.testing.expect(WebConfig.isValidAllowedOrigin("*"));
+    try std.testing.expect(WebConfig.isValidAllowedOrigin("null"));
+    try std.testing.expect(WebConfig.isValidAllowedOrigin("https://relay.nullclaw.io"));
+    try std.testing.expect(WebConfig.isValidAllowedOrigin("https://relay.nullclaw.io/"));
+    try std.testing.expect(WebConfig.isValidAllowedOrigin("chrome-extension://abcdefghijklmnop"));
+    try std.testing.expect(!WebConfig.isValidAllowedOrigin(""));
+    try std.testing.expect(!WebConfig.isValidAllowedOrigin("relay.nullclaw.io"));
+    try std.testing.expect(!WebConfig.isValidAllowedOrigin("https://relay.nullclaw.io/path"));
+}
+
+test "WebConfig transport validation supports local and relay" {
+    try std.testing.expect(WebConfig.isValidTransport("local"));
+    try std.testing.expect(WebConfig.isValidTransport("relay"));
+    try std.testing.expect(!WebConfig.isValidTransport("direct"));
+    try std.testing.expect(WebConfig.isRelayTransport("relay"));
+    try std.testing.expect(!WebConfig.isRelayTransport("local"));
+}
+
+test "WebConfig relay URL validation requires wss authority" {
+    try std.testing.expect(WebConfig.isValidRelayUrl("wss://relay.nullclaw.io/ws"));
+    try std.testing.expect(WebConfig.isValidRelayUrl("wss://relay.nullclaw.io"));
+    try std.testing.expect(!WebConfig.isValidRelayUrl("ws://relay.nullclaw.io/ws"));
+    try std.testing.expect(!WebConfig.isValidRelayUrl("https://relay.nullclaw.io/ws"));
+    try std.testing.expect(!WebConfig.isValidRelayUrl("wss://"));
+    try std.testing.expect(!WebConfig.isValidRelayUrl("wss://relay.nullclaw.io?x=1"));
+    try std.testing.expect(!WebConfig.isValidRelayUrl("wss://relay.nullclaw.io/ws#frag"));
+}
+
+test "WebConfig relay agent id validation enforces non-empty id" {
+    try std.testing.expect(WebConfig.isValidRelayAgentId("default"));
+    try std.testing.expect(!WebConfig.isValidRelayAgentId(""));
+    try std.testing.expect(!WebConfig.isValidRelayAgentId("agent id with spaces"));
+}
+
+test "WebConfig relay ttl validation enforces documented ranges" {
+    try std.testing.expect(WebConfig.isValidRelayPairingCodeTtl(60));
+    try std.testing.expect(WebConfig.isValidRelayPairingCodeTtl(300));
+    try std.testing.expect(!WebConfig.isValidRelayPairingCodeTtl(59));
+    try std.testing.expect(!WebConfig.isValidRelayPairingCodeTtl(301));
+
+    try std.testing.expect(WebConfig.isValidRelayUiTokenTtl(300));
+    try std.testing.expect(WebConfig.isValidRelayUiTokenTtl(86_400));
+    try std.testing.expect(!WebConfig.isValidRelayUiTokenTtl(299));
+
+    try std.testing.expect(WebConfig.isValidRelayTokenTtl(3_600));
+    try std.testing.expect(WebConfig.isValidRelayTokenTtl(2_592_000));
+    try std.testing.expect(!WebConfig.isValidRelayTokenTtl(3_599));
+}
