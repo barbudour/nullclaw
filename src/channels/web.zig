@@ -14,6 +14,7 @@ const log = std.log.scoped(.web);
 pub const WebChannel = struct {
     const MAX_E2E_PAYLOAD_BYTES: usize = 65_536;
     const E2E_ALG: []const u8 = "x25519-chacha20poly1305-v1";
+    const LOCAL_FIXED_PAIRING_CODE: []const u8 = "123456";
 
     const RelayTokenSource = enum {
         config,
@@ -406,7 +407,9 @@ pub const WebChannel = struct {
         self.relay_pairing_guard = try pairing_mod.PairingGuard.init(self.allocator, true, &.{});
         self.relay_pairing_issued_at = std.time.timestamp();
 
-        if (self.relay_pairing_guard) |*guard| {
+        if (self.transport == .local) {
+            self.rotateRelayPairingCode("fixed-local");
+        } else if (self.relay_pairing_guard) |*guard| {
             if (guard.pairingCode()) |code| {
                 log.info("Web relay pairing code (one-time, {d}s TTL): {s}", .{
                     self.relay_pairing_code_ttl_secs,
@@ -423,6 +426,22 @@ pub const WebChannel = struct {
     }
 
     fn rotateRelayPairingCode(self: *WebChannel, reason: []const u8) void {
+        if (self.transport == .local) {
+            if (self.relay_pairing_guard) |*guard| {
+                const code = guard.setPairingCode(LOCAL_FIXED_PAIRING_CODE) catch |err| {
+                    log.warn("Web local pairing code override failed: {}", .{err});
+                    return;
+                };
+                self.relay_pairing_issued_at = std.time.timestamp();
+                log.info("Web local pairing code ({s}, one-time, {d}s TTL): {s}", .{
+                    reason,
+                    self.relay_pairing_code_ttl_secs,
+                    code,
+                });
+            }
+            return;
+        }
+
         if (self.relay_pairing_guard) |*guard| {
             if (guard.regeneratePairingCode()) |code| {
                 self.relay_pairing_issued_at = std.time.timestamp();
@@ -754,25 +773,9 @@ pub const WebChannel = struct {
             return;
         }
 
-        var effective_pairing_code = pairing_code;
-        if (self.transport == .local) {
-            if (pairing_code) |provided| {
-                const trimmed = std.mem.trim(u8, provided, " \t\r\n");
-                if (std.mem.eql(u8, trimmed, "123456")) {
-                    if (self.relay_pairing_guard) |*guard| {
-                        if (guard.pairingCode()) |active_code| {
-                            // Temporary local-debug bypass: accept 123456 as an alias
-                            // of the currently active one-time pairing code.
-                            effective_pairing_code = active_code;
-                        }
-                    }
-                }
-            }
-        }
-
         const pair_token = blk: {
             if (self.relay_pairing_guard) |*guard| {
-                const attempt = guard.attemptPair(effective_pairing_code);
+                const attempt = guard.attemptPair(pairing_code);
                 switch (attempt) {
                     .paired => |token| break :blk token,
                     .missing_code => {
@@ -1960,6 +1963,22 @@ test "WebChannel relay pairing request rotates one-time code and initializes e2e
     const next_code = ch.relay_pairing_guard.?.pairingCode() orelse return error.TestUnexpectedResult;
     try std.testing.expect(!std.mem.eql(u8, code_copy, next_code));
     try std.testing.expectEqual(@as(usize, 1), ch.e2e_sessions.count());
+}
+
+test "WebChannel local pairing code is fixed to 123456 across rotations" {
+    var ch = WebChannel.initFromConfig(std.testing.allocator, .{
+        .transport = "local",
+        .account_id = "local-main",
+    });
+    defer ch.deinitRelaySecurityState();
+    try ch.initRelaySecurityState();
+
+    const first = ch.relay_pairing_guard.?.pairingCode() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("123456", first);
+
+    ch.rotateRelayPairingCode("test-rotate");
+    const second = ch.relay_pairing_guard.?.pairingCode() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("123456", second);
 }
 
 test "WebChannel relay encrypted user_message is published to bus" {
