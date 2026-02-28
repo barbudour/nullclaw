@@ -420,6 +420,7 @@ pub const WebChannel = struct {
     }
 
     fn relayPairingCodeExpired(self: *const WebChannel) bool {
+        if (self.transport == .local) return false;
         if (self.relay_pairing_issued_at == 0) return true;
         const age = std.time.timestamp() - self.relay_pairing_issued_at;
         return age > @as(i64, @intCast(self.relay_pairing_code_ttl_secs));
@@ -433,11 +434,9 @@ pub const WebChannel = struct {
                     return;
                 };
                 self.relay_pairing_issued_at = std.time.timestamp();
-                log.info("Web local pairing code ({s}, one-time, {d}s TTL): {s}", .{
-                    reason,
-                    self.relay_pairing_code_ttl_secs,
-                    code,
-                });
+                if (!std.mem.eql(u8, reason, "consumed")) {
+                    log.info("Web local pairing code active (fixed): {s}", .{code});
+                }
             }
             return;
         }
@@ -1979,6 +1978,18 @@ test "WebChannel local pairing code is fixed to 123456 across rotations" {
     ch.rotateRelayPairingCode("test-rotate");
     const second = ch.relay_pairing_guard.?.pairingCode() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("123456", second);
+}
+
+test "WebChannel local pairing code never expires" {
+    var ch = WebChannel.initFromConfig(std.testing.allocator, .{
+        .transport = "local",
+        .account_id = "local-main",
+    });
+    defer ch.deinitRelaySecurityState();
+    try ch.initRelaySecurityState();
+
+    ch.relay_pairing_issued_at = std.time.timestamp() - 86_400;
+    try std.testing.expect(!ch.relayPairingCodeExpired());
 }
 
 test "WebChannel relay encrypted user_message is published to bus" {
