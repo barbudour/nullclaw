@@ -2,7 +2,6 @@ services:
   agent:
     build: .
     image: nullclaw:latest
-    profiles: ["agent"]
     stdin_open: true
     tty: true
     env_file:
@@ -15,9 +14,8 @@ services:
   gateway:
     build: .
     image: nullclaw:latest
-    profiles: ["gateway"]
     ports:
-      - "8080:8080"
+      - 8080
     env_file:
       - path: .env
         required: false
